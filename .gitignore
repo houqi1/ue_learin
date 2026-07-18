@@ -1,0 +1,56 @@
+# Unreal Engine — standard ignores
+# Visual Studio / IDE
+.vs/
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.user
+*.userosscache
+*.sln.docstates
+
+# Generated project files (can be regenerated)
+*.sln
+*.slnx
+*.xcodeproj
+*.xcworkspace
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.vsconfig
+
+# Binaries & build products
+Binaries/
+Plugins/**/Binaries/
+Build/
+Plugins/**/Build/
+
+# Intermediate / generated
+Intermediate/
+Plugins/**/Intermediate/
+DerivedDataCache/
+Plugins/**/DerivedDataCache/
+
+# Editor local data
+Saved/
+**/Saved/
+
+# Built map data
+*_BuiltData.uasset
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Crash / debug dumps
+*.dmp
+*.pdb
+*.ilk
+*.exp
+
+# File backups
+*~
+*.bak
+*.tmp

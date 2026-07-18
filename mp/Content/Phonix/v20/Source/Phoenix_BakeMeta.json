@@ -1,0 +1,205 @@
+{
+  "source": "C:\\Users\\win11\\storytelling-clone\\models\\v20.glb",
+  "textures": {
+    "T_Phoenix_DataA": {
+      "path": "Textures/T_Phoenix_DataA.png",
+      "channels": {
+        "R": {
+          "_THICKNESS": [
+            0.004322456195950508,
+            0.273089736700058
+          ]
+        },
+        "G": {
+          "_PEAKS": [
+            -0.07378343492746353,
+            0.7338805198669434
+          ]
+        },
+        "B": {
+          "_DIST": [
+            0.0,
+            0.3416839838027954
+          ]
+        }
+      },
+      "uv_channel": 1,
+      "uv_name": "UVMap_Data",
+      "colorspace": "Linear / Non-Color",
+      "sRGB": false
+    },
+    "T_Phoenix_DataB": {
+      "path": "Textures/T_Phoenix_DataB.png",
+      "channels": {
+        "R": {
+          "_CONVEXITY": [
+            0.02219887264072895,
+            0.9999966621398926
+          ]
+        },
+        "G": {
+          "_CONCAVITY": [
+            1.0522265725398938e-08,
+            0.9622889757156372
+          ]
+        },
+        "B": "unused"
+      },
+      "uv_channel": 1,
+      "uv_name": "UVMap_Data",
+      "colorspace": "Linear / Non-Color",
+      "sRGB": false
+    }
+  },
+  "decode": "value = lerp(min, max, textureSample)",
+  "ranges": {
+    "_THICKNESS": [
+      0.004322456195950508,
+      0.273089736700058
+    ],
+    "_PEAKS": [
+      -0.07378343492746353,
+      0.7338805198669434
+    ],
+    "_DIST": [
+      0.0,
+      0.3416839838027954
+    ],
+    "_CONVEXITY": [
+      0.02219887264072895,
+      0.9999966621398926
+    ],
+    "_CONCAVITY": [
+      1.0522265725398938e-08,
+      0.9622889757156372
+    ]
+  },
+  "atlas_grid": {
+    "cols": 5,
+    "rows": 4,
+    "padding": 0.01
+  },
+  "atlas_cells": [
+    {
+      "mesh": "back",
+      "index": 0,
+      "cell_u": 0,
+      "cell_v": 0
+    },
+    {
+      "mesh": "belly",
+      "index": 1,
+      "cell_u": 1,
+      "cell_v": 0
+    },
+    {
+      "mesh": "body",
+      "index": 2,
+      "cell_u": 2,
+      "cell_v": 0
+    },
+    {
+      "mesh": "chest",
+      "index": 3,
+      "cell_u": 3,
+      "cell_v": 0
+    },
+    {
+      "mesh": "legs",
+      "index": 4,
+      "cell_u": 4,
+      "cell_v": 0
+    },
+    {
+      "mesh": "neck-bottom",
+      "index": 5,
+      "cell_u": 0,
+      "cell_v": 1
+    },
+    {
+      "mesh": "neck-top",
+      "index": 6,
+      "cell_u": 1,
+      "cell_v": 1
+    },
+    {
+      "mesh": "tail-bottom",
+      "index": 7,
+      "cell_u": 2,
+      "cell_v": 1
+    },
+    {
+      "mesh": "tail-center",
+      "index": 8,
+      "cell_u": 3,
+      "cell_v": 1
+    },
+    {
+      "mesh": "tail-top",
+      "index": 9,
+      "cell_u": 4,
+      "cell_v": 1
+    },
+    {
+      "mesh": "wing-left-bottom",
+      "index": 10,
+      "cell_u": 0,
+      "cell_v": 2
+    },
+    {
+      "mesh": "wing-left-center-bottom",
+      "index": 11,
+      "cell_u": 1,
+      "cell_v": 2
+    },
+    {
+      "mesh": "wing-left-center-top",
+      "index": 12,
+      "cell_u": 2,
+      "cell_v": 2
+    },
+    {
+      "mesh": "wing-left-pole",
+      "index": 13,
+      "cell_u": 3,
+      "cell_v": 2
+    },
+    {
+      "mesh": "wing-left-top",
+      "index": 14,
+      "cell_u": 4,
+      "cell_v": 2
+    },
+    {
+      "mesh": "wing-right-bottom",
+      "index": 15,
+      "cell_u": 0,
+      "cell_v": 3
+    },
+    {
+      "mesh": "wing-right-center-bottom",
+      "index": 16,
+      "cell_u": 1,
+      "cell_v": 3
+    },
+    {
+      "mesh": "wing-right-center-top",
+      "index": 17,
+      "cell_u": 2,
+      "cell_v": 3
+    },
+    {
+      "mesh": "wing-right-pole",
+      "index": 18,
+      "cell_u": 3,
+      "cell_v": 3
+    },
+    {
+      "mesh": "wing-right-top",
+      "index": 19,
+      "cell_u": 4,
+      "cell_v": 3
+    }
+  ],
+  "mesh_asset": "Meshes/SK_Phoenix.fbx"
+}

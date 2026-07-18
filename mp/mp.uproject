@@ -1,0 +1,22 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{1B54AF9E-421C-43A6-5ABB-69AD98A45FFE}",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "mp",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}
+	]
+}
