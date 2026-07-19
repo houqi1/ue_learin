@@ -1,0 +1,36 @@
+// =============================================================================
+// PhoneixGlassOffset.usf — screen offset from refract() (NOT engine Refraction pin)
+//
+// Custom: CMOT_Float2
+//   #include "/Project/PhoneixGlassOffset.usf"
+//   return 0;
+//
+// Inputs: Normal, CameraVector, IOR, RefractStrength
+// → SceneColor.Input  (InputMode must be OffsetFraction)
+// =============================================================================
+
+float3 N = normalize(Normal);
+float3 V = normalize(CameraVector);
+float NoV = saturate(dot(N, V));
+
+float Eta = 1.0f / max(IOR, 1.001f);
+float3 Incident = -V;
+float3 R = refract(Incident, N, Eta);
+float RLen = length(R);
+if (RLen < 1e-5f)
+{
+	R = reflect(Incident, N);
+}
+else
+{
+	R /= RLen;
+}
+
+float Grazing = saturate(1.0f - NoV);
+// Base scale is intentional: Strength 0.2 should already be a clear warp
+float Amp = RefractStrength * (0.5f + 1.0f * Grazing);
+
+// Screen-fraction offset for SceneColor OffsetFraction mode
+float2 Off = R.xy * Amp;
+Off = clamp(Off, float2(-0.35f, -0.35f), float2(0.35f, 0.35f));
+return Off;

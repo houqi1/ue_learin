@@ -1,0 +1,70 @@
+// =============================================================================
+// PhoneixGlass.usf — post-process refracted SceneIn (tint / fresnel / glow)
+//
+// SceneIn MUST be SceneColor sampled with PhoneixGlassOffset → OffsetFraction.
+// Do NOT use material Refraction pin for this look.
+//
+// Custom: CMOT_Float3
+//   #include "/Project/PhoneixGlass.usf"
+//   return 0;
+//
+// Inputs: Normal, CameraVector, SceneIn, BaseTint, EdgeTint, Thickness,
+//         FBias, FScale, FPower, Glow, Opacity
+// =============================================================================
+
+struct FPhoneixGlass
+{
+	float Rim(float NoV, float InBias, float InScale, float InPower)
+	{
+		float InvNoV = saturate(1.0f - NoV);
+		return saturate(InBias + InScale * pow(InvNoV, max(InPower, 0.0f)));
+	}
+
+	float3 Absorb(float3 Tint, float InThickness)
+	{
+		float t = saturate(InThickness);
+		return lerp(Tint, (Tint * Tint) * 0.35f, t);
+	}
+
+	float3 Compose(
+		float3 RefractedScene,
+		float3 InBaseTint,
+		float3 InEdgeTint,
+		float InThickness,
+		float Fresnel,
+		float InGlow,
+		float InOpacity)
+	{
+		float3 BodyTint = Absorb(InBaseTint, InThickness);
+		float Density = saturate(InOpacity);
+
+		float3 ClearGlass = RefractedScene;
+		float3 StainedGlass = RefractedScene * lerp(float3(1.0f, 1.0f, 1.0f), BodyTint * 2.0f, Density);
+		float3 Body = lerp(ClearGlass, StainedGlass, Density);
+
+		float3 Edge = InEdgeTint * (0.55f + 0.45f * Fresnel);
+		float Spec = pow(Fresnel, 1.35f) * (0.3f + 0.7f * (1.0f - saturate(InThickness)));
+		float3 ReflectionLobe = Edge * Spec;
+
+		float3 Glass = lerp(Body, Body * 0.35f + ReflectionLobe, Fresnel);
+		Glass += ReflectionLobe * 0.5f;
+		Glass *= (1.0f + max(InGlow, 0.0f) * (0.25f + 0.75f * Fresnel));
+		return Glass;
+	}
+};
+
+FPhoneixGlass PhoneixGlass;
+
+float3 N = normalize(Normal);
+float3 V = normalize(CameraVector);
+float NoV = saturate(dot(N, V));
+float Fresnel = PhoneixGlass.Rim(NoV, FBias, FScale, FPower);
+
+return PhoneixGlass.Compose(
+	SceneIn,
+	BaseTint,
+	EdgeTint,
+	Thickness,
+	Fresnel,
+	Glow,
+	Opacity);
