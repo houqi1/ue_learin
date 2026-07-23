@@ -1,15 +1,19 @@
 // =============================================================================
-// PhoneixGlass.usf — post-process refracted SceneIn (tint / fresnel / glow)
+// PhoneixGlass.usf — refracted SceneIn (tint / rim / glow)
 //
-// SceneIn MUST be SceneColor sampled with PhoneixGlassOffset → OffsetFraction.
-// Do NOT use material Refraction pin for this look.
+// MUST be valid inside Material CustomExpression() — no free functions.
+// All helpers live as struct methods (UE restriction).
 //
-// Custom: CMOT_Float3
-//   #include "/Project/PhoneixGlass.usf"
-//   return 0;
+// Custom: CMOT_Float3 — paste body or #include "/Project/PhoneixGlass.usf"
 //
 // Inputs: Normal, CameraVector, SceneIn, BaseTint, EdgeTint, Thickness,
-//         FBias, FScale, FPower, Glow, Opacity
+//         IOR, RefractStrength, FBias, FScale, FPower, Glow, Opacity
+//
+// Environment reflection is NOT mixed here. Graph iridescence only:
+//   lut  = colorsMap (view/normal row)
+//   iridTint = reflectionIridescence * (lut - 1) + 1   // lerp(1, lut, w)
+//   irid = EnvMap * IridFresnel * iridTint
+//   final = glass + irid
 // =============================================================================
 
 struct FPhoneixGlass
@@ -26,45 +30,44 @@ struct FPhoneixGlass
 		return lerp(Tint, (Tint * Tint) * 0.35f, t);
 	}
 
-	float3 Compose(
+	float3 ComposeBody(
 		float3 RefractedScene,
 		float3 InBaseTint,
-		float3 InEdgeTint,
 		float InThickness,
-		float Fresnel,
-		float InGlow,
 		float InOpacity)
 	{
 		float3 BodyTint = Absorb(InBaseTint, InThickness);
 		float Density = saturate(InOpacity);
-
 		float3 ClearGlass = RefractedScene;
 		float3 StainedGlass = RefractedScene * lerp(float3(1.0f, 1.0f, 1.0f), BodyTint * 2.0f, Density);
-		float3 Body = lerp(ClearGlass, StainedGlass, Density);
+		return lerp(ClearGlass, StainedGlass, Density);
+	}
 
-		float3 Edge = InEdgeTint * (0.55f + 0.45f * Fresnel);
-		float Spec = pow(Fresnel, 1.35f) * (0.3f + 0.7f * (1.0f - saturate(InThickness)));
+	float3 ApplyEdgeGlow(
+		float3 Glass,
+		float3 InEdgeTint,
+		float InThickness,
+		float RimFresnel,
+		float InGlow)
+	{
+		float3 Edge = InEdgeTint * (0.55f + 0.45f * RimFresnel);
+		float Spec = pow(RimFresnel, 1.35f) * (0.3f + 0.7f * (1.0f - saturate(InThickness)));
 		float3 ReflectionLobe = Edge * Spec;
-
-		float3 Glass = lerp(Body, Body * 0.35f + ReflectionLobe, Fresnel);
-		Glass += ReflectionLobe * 0.5f;
-		Glass *= (1.0f + max(InGlow, 0.0f) * (0.25f + 0.75f * Fresnel));
+		Glass = lerp(Glass, Glass * 0.35f + ReflectionLobe, RimFresnel * 0.35f);
+		Glass += ReflectionLobe * 0.25f;
+		Glass *= (1.0f + max(InGlow, 0.0f) * (0.25f + 0.75f * RimFresnel));
 		return Glass;
 	}
 };
 
-FPhoneixGlass PhoneixGlass;
+FPhoneixGlass PG;
 
 float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
 float NoV = saturate(dot(N, V));
-float Fresnel = PhoneixGlass.Rim(NoV, FBias, FScale, FPower);
 
-return PhoneixGlass.Compose(
-	SceneIn,
-	BaseTint,
-	EdgeTint,
-	Thickness,
-	Fresnel,
-	Glow,
-	Opacity);
+float RimFresnel = PG.Rim(NoV, FBias, FScale, FPower);
+float3 Body = PG.ComposeBody(SceneIn, BaseTint, Thickness, Opacity);
+float3 Color = PG.ApplyEdgeGlow(Body, EdgeTint, Thickness, RimFresnel, Glow);
+
+return Color;
