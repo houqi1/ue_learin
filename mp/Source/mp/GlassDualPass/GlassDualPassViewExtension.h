@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// D1 glass dual-pass Step3: SkinCache GPU positions + static mesh backfaces → RT_GlassBack.
+// D1 glass dual-pass: SkinCache + static backfaces → RT_GlassBack.
 
 #pragma once
 
@@ -13,36 +13,36 @@ class FSkeletalMeshObject;
 
 enum class EGlassBackfaceSource : uint8
 {
-	/** Static mesh position VB. */
 	StaticMesh,
-	/** Skeletal: bind SkinCache skinned position buffer on RT (preferred). */
 	SkeletalSkinCache,
-	/** Skeletal: bind-pose position RHI if SkinCache unavailable. */
 	SkeletalBindPose,
 };
 
-/**
- * Lightweight draw description (no per-vertex CPU arrays).
- * Skeletal SkinCache VB is resolved on the render thread from MeshObject.
- */
 struct FGlassBackfaceDrawItem
 {
 	FMatrix44f LocalToWorld = FMatrix44f::Identity;
 
-	/** Static / bind-pose position VB (also fallback if SkinCache miss). */
 	FBufferRHIRef FallbackPositionBuffer;
 	FBufferRHIRef IndexBuffer;
 
-	/** Valid only until detach; used on render thread same frame. */
-	const FSkeletalMeshObject* MeshObject = nullptr;
+	/** UV buffer (channel stride = NumTexCoords). Bake data on UV1. */
+	FShaderResourceViewRHIRef UVSRV;
+	uint32 NumTexCoords = 1;
 
-	/** LOD render-section index for FGPUSkinCache::GetPositionBuffer(..., SectionIndex). */
+	/**
+	 * Tangent buffer for model normals (static / bind-pose).
+	 * Layout matches engine StaticMeshVertexBuffer: [TangentX, TangentZ] pairs → TangentFormat=0.
+	 * SkinCache path overrides from GetCachedGeometry on RT.
+	 */
+	FShaderResourceViewRHIRef TangentSRV;
+	uint32 TangentFormat = 0; // 0 = interleaved X/Z (normal at *2+1)
+
+	const FSkeletalMeshObject* MeshObject = nullptr;
 	int32 SkinSectionIndex = INDEX_NONE;
 
 	uint32 NumVertices = 0;
 	uint32 FirstIndex = 0;
 	uint32 NumIndices = 0;
-	/** Section.BaseVertexIndex — used with section-local SkinCache VB (may be negated at draw). */
 	int32 BaseVertexIndex = 0;
 
 	EGlassBackfaceSource Source = EGlassBackfaceSource::StaticMesh;
@@ -53,6 +53,11 @@ struct FGlassDualPassFramePayload
 	TArray<FGlassBackfaceDrawItem> Draws;
 	FTextureRenderTargetResource* PreviewRTResource = nullptr;
 	int32 ViewFamilyId = 0;
+
+	FTextureRHIRef DataA;
+	FTextureRHIRef DataB;
+	FTextureRHIRef EnvMap; // TextureCube RHI
+	FTextureRHIRef ColorsMap;
 };
 
 class FGlassDualPassViewExtension final : public FSceneViewExtensionBase
@@ -66,14 +71,25 @@ public:
 
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 
-	virtual void PostRenderBasePassDeferred_RenderThread(
+	/**
+	 * Sole draw path: after deferred lighting (lit SceneColor available).
+	 * Not PostRenderBasePass — that stage is pre-lighting GBuffer/SceneColor.
+	 */
+	virtual void PrePostProcessPass_RenderThread(
 		FRDGBuilder& GraphBuilder,
-		FSceneView& View,
-		const FRenderTargetBindingSlots& RenderTargets,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures) override;
+		const FSceneView& View,
+		const FPostProcessingInputs& Inputs) override;
 
 private:
 	void GatherInto(TArray<FGlassBackfaceDrawItem>& OutDraws, const FSceneViewFamily& ViewFamily);
+
+	/** Clear RT + optional shaded backface draws. SceneColorRDG may be null (uses black). */
+	void ExecuteGlassBackfacePass(
+		FRDGBuilder& GraphBuilder,
+		const FSceneView& View,
+		FRDGTextureRef SceneColorRDG,
+		bool bCopySceneColor,
+		const TCHAR* PassTag);
 
 	TSharedPtr<FGlassDualPassFramePayload, ESPMode::ThreadSafe> PublishedPayload;
 	FCriticalSection GlassDataCS;

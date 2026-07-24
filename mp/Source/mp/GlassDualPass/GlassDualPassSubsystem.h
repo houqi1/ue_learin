@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Owns SceneViewExtension + preview RenderTarget (method A).
+// Owns SceneViewExtension + preview RT + bake/env textures for backface shading.
 
 #pragma once
 
@@ -10,17 +10,13 @@
 class FGlassDualPassViewExtension;
 class FTextureRenderTargetResource;
 class UTextureRenderTarget2D;
+class UTexture2D;
+class UTextureCube;
 
 /**
  * Engine subsystem for glass dual-pass (D1).
- * Preview RT: /Game/Phonix/RT_GlassBack — sample with M_GlassBackPreview on a plane.
- *
- * Console:
- *   r.GlassDualPass 0=off 1=backfaces (Step3) 2=magenta clear (Step2)
- *   r.GlassDualPass.MasterMaterial — master name (default M_PhoneixGlass)
- *
- * Glass selection: StaticMeshComponent material slots that use M_PhoneixGlass,
- * or any Material Instance whose parent chain reaches M_PhoneixGlass.
+ * Preview RT: /Game/Phonix/RT_GlassBack
+ * Backface shading samples T_Phoenix_DataA/B, colorsMap, env cube, lit SceneColor.
  */
 UCLASS()
 class UGlassDualPassSubsystem : public UEngineSubsystem
@@ -31,25 +27,43 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Preview target cleared each frame when r.GlassDualPass=1. */
 	UFUNCTION(BlueprintCallable, Category = "GlassDualPass")
 	UTextureRenderTarget2D* GetPreviewRenderTarget() const { return PreviewRT; }
 
-	/** Create RT if needed (Game Thread). */
 	UTextureRenderTarget2D* GetOrCreatePreviewRT();
-
-	/** Resize preview RT (Game Thread). */
 	void EnsurePreviewRTSize(int32 SizeX, int32 SizeY);
-
-	/**
-	 * Ensure GPU resource exists and return it (Game Thread).
-	 * Call after GetOrCreate / EnsureSize; fixes "RHI texture null" skips.
-	 */
 	FTextureRenderTargetResource* GetPreviewRTResource();
+
+	/** Lazy-load bake/env/LUT textures used by backface global shader (each path tried at most once). */
+	void EnsureShadingTextures();
+
+	UTexture2D* GetDataA() const { return DataA; }
+	UTexture2D* GetDataB() const { return DataB; }
+	UTextureCube* GetEnvMap() const { return EnvMap; }
+	UTexture2D* GetColorsMap() const { return ColorsMap; }
 
 private:
 	TSharedPtr<FGlassDualPassViewExtension, ESPMode::ThreadSafe> ViewExtension;
 
 	UPROPERTY()
 	TObjectPtr<UTextureRenderTarget2D> PreviewRT;
+
+	UPROPERTY()
+	TObjectPtr<UTexture2D> DataA;
+
+	UPROPERTY()
+	TObjectPtr<UTexture2D> DataB;
+
+	/** HDR studio environment — asset is TextureCube, not Texture2D. */
+	UPROPERTY()
+	TObjectPtr<UTextureCube> EnvMap;
+
+	UPROPERTY()
+	TObjectPtr<UTexture2D> ColorsMap;
+
+	/** Avoid per-frame LoadObject spam when an asset is missing / wrong type. */
+	bool bTriedLoadDataA = false;
+	bool bTriedLoadDataB = false;
+	bool bTriedLoadEnvMap = false;
+	bool bTriedLoadColorsMap = false;
 };
