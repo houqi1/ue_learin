@@ -7,7 +7,7 @@
 		{
 			"Name": "mp",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PostConfigInit"
 		}
 	],
 	"Plugins": [

@@ -6,7 +6,8 @@
 #include "Modules/ModuleManager.h"
 
 /**
- * Game module: registers /Project -> <ProjectDir>/Shaders for Material Custom includes.
+ * Game module: registers /Project -> <ProjectDir>/Shaders for Material Custom + global shaders.
+ * LoadingPhase must be PostConfigInit so IMPLEMENT_GLOBAL_SHADER types register before shader lock.
  */
 class FmpModule : public IModuleInterface
 {

@@ -1,0 +1,40 @@
+// D1 glass dual-pass Step3 backfaces → RT_GlassBack.
+// MainVS: static mesh (ATTRIBUTE0 position).
+// MainVS_SkinCache: skeletal GPU SkinCache positions via Buffer<float> SRV (3 floats/vert).
+
+#include "/Engine/Public/Platform.ush"
+
+float4x4 LocalToWorld;
+float4x4 ViewProjection;
+float4 DebugColor;
+
+// SkinCache path (from FCachedGeometry::Section::PositionBuffer).
+// Engine writes skinned verts at absolute indices: SkinCacheStart = Section.BaseVertexIndex.
+// Indexed draw: SV_VertexID == absolute vertex id from the index buffer — do NOT subtract BaseVertexIndex.
+Buffer<float> PositionSRV;
+
+void MainVS(
+	in float3 InPosition : ATTRIBUTE0,
+	out float4 OutPosition : SV_POSITION)
+{
+	const float4 WorldPos = mul(float4(InPosition, 1.0f), LocalToWorld);
+	OutPosition = mul(WorldPos, ViewProjection);
+}
+
+void MainVS_SkinCache(
+	uint VertexId : SV_VertexID,
+	out float4 OutPosition : SV_POSITION)
+{
+	const float3 InPosition = float3(
+		PositionSRV[VertexId * 3 + 0],
+		PositionSRV[VertexId * 3 + 1],
+		PositionSRV[VertexId * 3 + 2]);
+	const float4 WorldPos = mul(float4(InPosition, 1.0f), LocalToWorld);
+	OutPosition = mul(WorldPos, ViewProjection);
+}
+
+void MainPS(
+	out float4 OutColor : SV_Target0)
+{
+	OutColor = DebugColor;
+}

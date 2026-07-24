@@ -12,7 +12,7 @@
 // Environment reflection is NOT mixed here. Graph iridescence only:
 //   lut  = colorsMap (view/normal row)
 //   iridTint = reflectionIridescence * (lut - 1) + 1   // lerp(1, lut, w)
-//   irid = EnvMap * IridFresnel * iridTint
+//   irid = (EnvMap * EnvReflectionIntensity) * IridFresnel * iridTint
 //   final = glass + irid
 // =============================================================================
 
