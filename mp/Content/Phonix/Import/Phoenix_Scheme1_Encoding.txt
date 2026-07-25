@@ -1,0 +1,15 @@
+Scheme1 Encoding for Unreal
+COLOR0 (Col) POINT BYTE_COLOR:
+  R = _CONVEXITY raw clamped [0,1]
+  G = _CONCAVITY raw clamped [0,1]
+  B = normalize(_THICKNESS)
+  A = normalize(_DIST)
+UV1 (UVMap_Data):
+  U = normalize(_PEAKS)
+  V = 0
+Ranges used for normalize:
+  _CONVEXITY: min=0.02219887 max=0.99999666
+  _CONCAVITY: min=0.00000001 max=0.96228898
+  _THICKNESS: min=0.00432246 max=0.27308974
+  _DIST: min=0.00000000 max=0.34168398
+  _PEAKS: min=-0.07378343 max=0.73388052

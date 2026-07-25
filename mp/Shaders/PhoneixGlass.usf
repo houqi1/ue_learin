@@ -1,22 +1,31 @@
 // =============================================================================
-// PhoneixGlass.usf — refracted SceneIn (tint / rim / glow)
+// PhoneixGlass.usf — front glass after SceneIn (incl. BackRT mix in graph)
 //
 // MUST be valid inside Material CustomExpression() — no free functions.
 // All helpers live as struct methods (UE restriction).
 //
 // Custom: CMOT_Float3 — paste body or #include "/Project/PhoneixGlass.usf"
 //
-// Inputs: Normal, CameraVector, SceneIn, BaseTint, EdgeTint, Thickness,
-//         IOR, RefractStrength, FBias, FScale, FPower, Glow, Opacity
+// Inputs:
+//   Normal, CameraVector, SceneIn
+//   BaseTint (= vGlassColor body), EdgeTint
+//   Thickness, ThicknessDecay, Opacity
+//   IOR, RefractStrength          (offset graph; kept for pin compat)
+//   FBias, FScale, FPower, Glow   (rim / edge glow after optical stack)
+//   UseTransmittance
+//   FringeCurve, FringeMix, FringeColor
+//   ColorBoost, ColorFactor, RgbCurve (float3)
 //
-// Dual-pass front (sample RT_GlassBack): use PhoneixGlassDualFront.usf instead
-//   and add Custom inputs GlassBackRT, ScreenUV, BackfaceWeight.
+// Post-SceneIn order:
+//   1) × transmittance = 1 - UseTransmittance * Fresnel (grazing less T)
+//   2) mix fringe (fringeness from |N·V|)
+//   3) colorBoost (sat + mid contrast)
+//   4) thickness body: exp(-Thickness*Decay) mix BaseTint
+//   5) × ColorFactor
+//   6) RGB pow curve (identity at 1)
+//   7) rim edge glow (existing EdgeTint / Glow)
 //
-// Environment reflection is NOT mixed here. Graph iridescence only:
-//   lut  = colorsMap (view/normal row)
-//   iridTint = reflectionIridescence * (lut - 1) + 1   // lerp(1, lut, w)
-//   irid = (EnvMap * EnvReflectionIntensity) * IridFresnel * iridTint
-//   final = glass + irid
+// Env reflection / colorsMap iridescence stay in material graph (add on Emissive).
 // =============================================================================
 
 struct FPhoneixGlass
@@ -27,23 +36,48 @@ struct FPhoneixGlass
 		return saturate(InBias + InScale * pow(InvNoV, max(InPower, 0.0f)));
 	}
 
-	float3 Absorb(float3 Tint, float InThickness)
+	// Schlick F0≈0.04 glass/air; CosTheta = |N·V|
+	float FresnelSchlick(float CosTheta)
 	{
-		float t = saturate(InThickness);
-		return lerp(Tint, (Tint * Tint) * 0.35f, t);
+		const float R0 = 0.04f;
+		const float OneMinus = saturate(1.0f - CosTheta);
+		return R0 + (1.0f - R0) * pow(OneMinus, 5.0f);
 	}
 
-	float3 ComposeBody(
-		float3 RefractedScene,
-		float3 InBaseTint,
-		float InThickness,
-		float InOpacity)
+	float Luma(float3 C)
 	{
-		float3 BodyTint = Absorb(InBaseTint, InThickness);
-		float Density = saturate(InOpacity);
-		float3 ClearGlass = RefractedScene;
-		float3 StainedGlass = RefractedScene * lerp(float3(1.0f, 1.0f, 1.0f), BodyTint * 2.0f, Density);
-		return lerp(ClearGlass, StainedGlass, Density);
+		return dot(C, float3(0.2126f, 0.7152f, 0.0722f));
+	}
+
+	// Relative sat + mid-grey contrast. ColorBoost=1 → identity.
+	float3 ApplyColorBoost(float3 C, float Boost)
+	{
+		const float B = max(Boost, 0.0f);
+		const float L = Luma(C);
+		// Saturation: push away from / toward grey
+		C = L + (C - L) * B;
+		// Contrast about 0.5
+		C = 0.5f + (C - 0.5f) * B;
+		return C;
+	}
+
+	// Thick → more body color (BaseTint); thin → keep scene. W = 1 - exp(-t*decay)
+	float3 ApplyThicknessBody(float3 C, float3 GlassColor, float InThickness, float Decay)
+	{
+		const float T = max(InThickness, 0.0f);
+		const float D = max(Decay, 0.0f);
+		const float Remain = exp(-T * D); // 1 at t=0, →0 when thick
+		// Remain high: keep C; Remain low: eat toward GlassColor * C (absorb) then toward tint
+		const float3 Stained = C * max(GlassColor, 0.0f.xxx);
+		const float3 BodyMix = lerp(GlassColor, Stained, Remain);
+		return lerp(BodyMix, C, Remain);
+	}
+
+	// Per-channel pow; RgbCurve = (1,1,1) identity. Values <1 lift mids / soft contrast.
+	float3 ApplyRgbCurve(float3 C, float3 Curve)
+	{
+		const float3 E = max(Curve, 1e-3f.xxx);
+		return pow(max(C, 0.0f.xxx), E);
 	}
 
 	float3 ApplyEdgeGlow(
@@ -68,9 +102,56 @@ FPhoneixGlass PG;
 float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
 float NoV = saturate(dot(N, V));
+// |N·V| for fringe / fresnel (two-sided safe)
+float AbsNV = abs(dot(N, V));
 
+float3 Color = SceneIn;
+
+// -----------------------------------------------------------------------------
+// 1) Transmittance: 1 - useTransmittance * Fresnel (grazing → less T)
+// -----------------------------------------------------------------------------
+float Fview = PG.FresnelSchlick(AbsNV);
+float Transmittance = 1.0f - saturate(UseTransmittance) * Fview;
+Color *= Transmittance;
+
+// -----------------------------------------------------------------------------
+// 2) Edge fringe: mix(color, fringeColor, fringeness), fringeness ~ |N·V|
+// -----------------------------------------------------------------------------
+float Fringeness =
+	pow(saturate(1.0f - AbsNV), max(FringeCurve, 0.01f)) * FringeMix;
+Color = lerp(Color, FringeColor.rgb, saturate(Fringeness));
+
+// -----------------------------------------------------------------------------
+// 3) colorBoost — sat + contrast (1 = neutral)
+// -----------------------------------------------------------------------------
+Color = PG.ApplyColorBoost(Color, ColorBoost);
+
+// -----------------------------------------------------------------------------
+// 4) Thickness body: exp(-vThickness * decay) mix vGlassColor (BaseTint)
+// -----------------------------------------------------------------------------
+Color = PG.ApplyThicknessBody(Color, BaseTint.rgb, Thickness, ThicknessDecay);
+
+// Optional legacy Opacity: density blend toward stained (keeps old Opacity pin useful)
+{
+	float Density = saturate(Opacity);
+	float3 Stained = Color * lerp(float3(1.0f, 1.0f, 1.0f), max(BaseTint.rgb, 0.0f.xxx) * 2.0f, Density);
+	Color = lerp(Color, Stained, Density);
+}
+
+// -----------------------------------------------------------------------------
+// 5) colorFactor — overall intensity
+// -----------------------------------------------------------------------------
+Color *= ColorFactor;
+
+// -----------------------------------------------------------------------------
+// 6) RGB curve pow (curve < 1 softens; =1 identity)
+// -----------------------------------------------------------------------------
+Color = PG.ApplyRgbCurve(Color, RgbCurve.rgb);
+
+// -----------------------------------------------------------------------------
+// 7) Existing rim / edge glow (EdgeTint, FBias/FScale/FPower, Glow)
+// -----------------------------------------------------------------------------
 float RimFresnel = PG.Rim(NoV, FBias, FScale, FPower);
-float3 Body = PG.ComposeBody(SceneIn, BaseTint, Thickness, Opacity);
-float3 Color = PG.ApplyEdgeGlow(Body, EdgeTint, Thickness, RimFresnel, Glow);
+Color = PG.ApplyEdgeGlow(Color, EdgeTint.rgb, Thickness, RimFresnel, Glow);
 
-return Color;
+return max(Color, 0.0f.xxx);

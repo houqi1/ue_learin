@@ -1,36 +1,48 @@
 // =============================================================================
-// PhoneixGlassOffset.usf — screen offset from refract() (NOT engine Refraction pin)
+// PhoneixGlassOffset.usf — sample UV from P + R * vThickness (world space)
 //
-// Custom: CMOT_Float2
+// Custom: CMOT_Float2  → absolute Viewport UV (0..1) of the refracted sample point
 //   #include "/Project/PhoneixGlassOffset.usf"
-//   return 0;
 //
-// Inputs: Normal, CameraVector, IOR, RefractStrength
-// → SceneColor.Input  (InputMode must be OffsetFraction)
+// Inputs:
+//   WorldPos       float3   Absolute World Position
+//   Normal         float3   Pixel / vertex normal WS
+//   CameraVector   float3   CameraVectorWS (toward camera)
+//   IOR            float
+//
+// vThickness: CONSTANT for now (placeholder). Replace later (e.g. bake _DIST / atlas).
+//   Do NOT use material Thickness param here — that drives body tint / optical stack only.
+//
+// Graph:
+//   SampleUV = this Custom
+//   Back     = Sample(GlassBackRT, SampleUV)
+//   Scene    = SceneColor(Offset = SampleUV - ViewportUV)
+//   SceneIn  = lerp(Scene, Back.rgb, Back.a)
 // =============================================================================
+
+// Placeholder constant — swap for bake/per-pixel later.
+static const float kGlassSampleVThickness = 0.170842f;
 
 float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
-float NoV = saturate(dot(N, V));
 
-float Eta = 1.0f / max(IOR, 1.001f);
 float3 Incident = -V;
+float Eta = 1.0f / max(IOR, 1.001f);
 float3 R = refract(Incident, N, Eta);
-float RLen = length(R);
-if (RLen < 1e-5f)
+if (dot(R, R) < 1e-8f)
 {
 	R = reflect(Incident, N);
 }
-else
-{
-	R /= RLen;
-}
+R = normalize(R);
 
-float Grazing = saturate(1.0f - NoV);
-// Base scale is intentional: Strength 0.2 should already be a clear warp
-float Amp = RefractStrength * (0.5f + 1.0f * Grazing);
+// P' = P + R * vThickness
+float3 SampleWorldPos = WorldPos + R * kGlassSampleVThickness;
 
-// Screen-fraction offset for SceneColor OffsetFraction mode
-float2 Off = R.xy * Amp;
-Off = clamp(Off, float2(-0.35f, -0.35f), float2(0.35f, 0.35f));
-return Off;
+float3 TranslatedSamplePos = SampleWorldPos + LWCToFloat(ResolvedView.PreViewTranslation);
+float4 Clip = mul(float4(TranslatedSamplePos, 1.0f), ResolvedView.TranslatedWorldToClip);
+float InvW = rcp(max(abs(Clip.w), 1e-5f));
+float2 Ndc = Clip.xy * InvW;
+float2 SampleUV = float2(0.5f + 0.5f * Ndc.x, 0.5f - 0.5f * Ndc.y);
+SampleUV = saturate(SampleUV);
+
+return SampleUV;

@@ -78,7 +78,8 @@ struct FGlassBackfaceShading
 	}
 
 	/**
-	 * Full backface color (Scene + Env + colorsMap + fringe + transmittance + curvature).
+	 * Full backface color. Fixed order:
+	 * N+V → refract → P+R*vDist UV → SceneColor → Env → fringe → T → curvature → iridescence.
 	 * Bake DataA/B currently mid-range constants (BakeGate keeps samples live).
 	 */
 	float3 Shade(
@@ -116,32 +117,45 @@ struct FGlassBackfaceShading
 		const float BakeGate = 0.0f * (DataA.r + DataB.r);
 
 		const float Peaks = 0.330049f + BakeGate;
-		const float Dist = (0.170842f + BakeGate) * DistScale;
+		const float Dist = (0.170842f + BakeGate) * DistScale; // vDist
 		const float Convexity = 0.511098f + BakeGate;
 		const float Concavity = 0.481145f + BakeGate;
 		const float VCurvature = Convexity - Concavity;
 
+		// -------------------------------------------------------------------------
+		// Pipeline order (fixed):
+		//   N (flipped) + V
+		//   → refract(V, N, 1/iorStart)
+		//   → P + R * vDist → project UV
+		//   → sample SceneColor (Post / lit scene RT)
+		//   → optional + envRefraction * Env(R)
+		//   → mix edge fringe
+		//   → × transmittance (Fresnel, gated by UseTransmittance)
+		//   → × curvature (1 + vCurvature * |R·N|)
+		//   → × refraction iridescence (colorsMap row y=1, using R)
+		// -------------------------------------------------------------------------
+
+		// 1) Normal (face toward camera) + view ray V (surface → away from camera along path)
 		float3 Normal = normalize(WorldNormal);
 		const float3 ToCamera = normalize(CameraWorldPos - WorldPos);
 		if (dot(Normal, ToCamera) < 0.0f)
 		{
 			Normal = -Normal;
 		}
-
 		const float3 ViewDirection = normalize(WorldPos - CameraWorldPos);
 		const float DotNormalView = dot(Normal, ViewDirection);
 
+		// 2) Single refract(V, N, 1/iorStart); TIR → reflect
 		const float Eta = 1.0f / max(IorStart, 1.001f);
-		float3 Refraction = refract(ViewDirection, Normal, Eta);
-		if (dot(Refraction, Refraction) < 1e-8f)
+		float3 R = refract(ViewDirection, Normal, Eta);
+		if (dot(R, R) < 1e-8f)
 		{
-			Refraction = reflect(ViewDirection, Normal);
+			R = reflect(ViewDirection, Normal);
 		}
-		Refraction = normalize(Refraction);
+		R = normalize(R);
 
-		const float Transmittance = 1.0f - UseTransmittance * FresnelSchlick(Refraction, Normal);
-
-		const float3 OffsetPos = WorldPos + Refraction * Dist;
+		// 3) P + R * vDist → project UV
+		const float3 OffsetPos = WorldPos + R * Dist;
 		float2 SceneBufferUV;
 		float SceneEdgeMask;
 		ProjectWorldToSceneBufferUV(
@@ -149,32 +163,39 @@ struct FGlassBackfaceShading
 			SceneViewRectMin, SceneViewSize, SceneBufferInvSize, SceneEdgeSoftness,
 			SceneBufferUV, SceneEdgeMask);
 
+		// 4) Sample scene main RT (Post / lit SceneColor)
 		float3 Texel = 0.0f.xxx;
 		if (SceneEdgeMask > 0.0f)
 		{
 			Texel = SceneColorTexture.SampleLevel(SceneSampler, SceneBufferUV, 0).rgb * SceneEdgeMask;
 		}
 
-		const float3 Ray = Refraction;
+		// 5) Optional + envRefraction * Env(refract direction)
 		if (EnvRefraction > 0.0f)
 		{
-			Texel += GetEnvColor(EnvMapTexture, EnvSampler, Ray) * EnvRefraction;
+			Texel += GetEnvColor(EnvMapTexture, EnvSampler, R) * EnvRefraction;
 		}
 
-		// colorsMap: rd = post-refraction ray; n = flipped normal; UV.y = 1
-		const float3 Lut = GetIridescence(ColorsMapTexture, ColorsSampler, Refraction, -Normal);
-		const float3 IridTint = RefractionIridescence * (Lut - 1.0f) + 1.0f;
-		Texel *= IridTint;
-
+		// 6) Mix edge fringe
 		const float Fringeness =
 			pow(saturate(1.0f - abs(DotNormalView)), max(FringeCurve, 0.01f)) * FringeMix
 			* saturate(0.35f + 0.65f * saturate(Peaks));
 		Texel = lerp(Texel, FringeColor, saturate(Fringeness));
 
-		float3 Color = Texel * Transmittance
-			* (1.0f + VCurvature * abs(dot(Ray, Normal)));
+		// 7) × transmittance (Fresnel; UseTransmittance=0 → fully transparent term = 1)
+		const float Transmittance = 1.0f - UseTransmittance * FresnelSchlick(R, Normal);
+		Texel *= Transmittance;
 
-		return max(Color, 0.0f);
+		// 8) × curvature (1 + vCurvature * |R·N|)
+		Texel *= (1.0f + VCurvature * abs(dot(R, Normal)));
+
+		// 9) × refraction iridescence multiplier (colorsMap first row y=1, using R)
+		//    thickness = 1 - abs(dot(n, rd)); UV = (t*0.3+0.08, 1); n = flipped normal
+		const float3 Lut = GetIridescence(ColorsMapTexture, ColorsSampler, R, -Normal);
+		const float3 IridTint = RefractionIridescence * (Lut - 1.0f) + 1.0f;
+		Texel *= IridTint;
+
+		return max(Texel, 0.0f);
 	}
 };
 
