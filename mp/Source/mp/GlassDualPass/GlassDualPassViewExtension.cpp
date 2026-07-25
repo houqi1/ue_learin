@@ -73,7 +73,7 @@ static TAutoConsoleVariable<float> CVarGlassDistScale(TEXT("r.GlassDualPass.Dist
 static TAutoConsoleVariable<float> CVarGlassFrontWeight(
 	TEXT("r.GlassDualPass.FrontWeight"),
 	0.65f,
-	TEXT("Front glass DMI BackfaceWeight (0=ignore RT, 1=full). Requires PhoneixGlassDualFront.usf."),
+	TEXT("Front Scheme4 weight: multiplies RT coverage alpha. Mix = lerp(SceneIn, RT.rgb, RT.a * weight). 0=SceneColor only, 1=full dual-pass."),
 	ECVF_Default);
 
 static const FLinearColor GGlassBackDebugMagenta(1.f, 0.f, 1.f, 1.f);

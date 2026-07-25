@@ -11,6 +11,11 @@
 //   GlassBackRT    Texture2D  (param name GlassBackRT — subsystem sets this)
 //   ScreenUV       float2     (viewport UV 0..1)
 //   BackfaceWeight float      (0=off, 1=full backface; subsystem sets default)
+//
+// Scheme 4 (coverage mask):
+//   RT_GlassBack is cleared to (0,0,0,0); backface PS writes a=1 on glass pixels.
+//   Front: SceneMix = lerp(SceneIn, Back.rgb, Back.a * BackfaceWeight)
+//   Non-glass RT pixels (a=0) keep SceneIn (SceneColor); no full-screen SceneColor blit.
 // =============================================================================
 
 struct FPhoneixGlass
@@ -63,9 +68,11 @@ float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
 float NoV = saturate(dot(N, V));
 
+// Coverage mask from RT alpha (clear a=0; written glass a=1). Optional global weight.
 float WBack = saturate(BackfaceWeight);
-float3 BackSample = GlassBackRT.SampleLevel(GlassBackRTSampler, ScreenUV, 0).rgb;
-float3 SceneMix = lerp(SceneIn, BackSample, WBack);
+float4 BackSample = GlassBackRT.SampleLevel(GlassBackRTSampler, ScreenUV, 0);
+float Coverage = saturate(BackSample.a) * WBack;
+float3 SceneMix = lerp(SceneIn, BackSample.rgb, Coverage);
 
 float RimFresnel = PG.Rim(NoV, FBias, FScale, FPower);
 float3 Body = PG.ComposeBody(SceneMix, BaseTint, Thickness, Opacity);

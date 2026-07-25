@@ -13,7 +13,11 @@ namespace GlassDualPassFront
 {
 	/** Texture param on front M_PhoneixGlass / MIs (Custom or TextureSample). */
 	static constexpr const TCHAR* GlassBackRTParam = TEXT("GlassBackRT");
-	/** 0 = ignore back RT; 1 = full replace SceneIn with backface. */
+	/**
+	 * Scheme 4: multiplies RT coverage alpha.
+	 * 0 = always use SceneIn (SceneColor); 1 = full RT where a>0.
+	 * Final mix: lerp(SceneIn, RT.rgb, RT.a * BackfaceWeight).
+	 */
 	static constexpr const TCHAR* BackfaceWeightParam = TEXT("BackfaceWeight");
 
 	/**

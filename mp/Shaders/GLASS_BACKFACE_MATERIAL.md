@@ -23,7 +23,8 @@ Edit the material in the editor → RT_GlassBack updates (effect parameters + Cu
   Cull: CM_CCW (back faces), no depth test
 
 [Front]
-  DMI GlassBackRT + BackfaceWeight → PhoneixGlassDualFront.usf
+  Front Scheme 4: SceneIn = lerp(SceneColor, GlassBackRT.rgb, RT.a * BackfaceWeight)
+  (RT clear a=0; backface writes a=1. No full-screen SceneColor blit into RT.)
 ```
 
 | What | Owner |

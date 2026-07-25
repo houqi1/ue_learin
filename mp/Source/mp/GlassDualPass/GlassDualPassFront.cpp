@@ -103,7 +103,7 @@ namespace GlassDualPassFront
 		{
 			LastLog = Now;
 			UE_LOG(LogGlassDualPass, Log,
-				TEXT("Front dual-pass: GlassBackRT + BackfaceWeight=%.2f applied (switch Custom to PhoneixGlassDualFront.usf if not yet)"),
+				TEXT("Front Scheme4: GlassBackRT + BackfaceWeight=%.2f (mix = lerp(SceneColor, RT.rgb, RT.a * weight); use DualFront.usf or graph lerp)"),
 				BackfaceWeight);
 		}
 	}
