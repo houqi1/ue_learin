@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// D1 glass dual-pass: SkinCache + static backfaces → RT_GlassBack.
+// Glass dual-pass: Material Shader (M_PhoneixGlass_Back) draws backfaces → RT_GlassBack.
 
 #pragma once
 
@@ -9,55 +9,27 @@
 #include "HAL/CriticalSection.h"
 
 class FTextureRenderTargetResource;
-class FSkeletalMeshObject;
+class FPrimitiveSceneProxy;
+class FMaterialRenderProxy;
 
-enum class EGlassBackfaceSource : uint8
+/** One glass primitive to draw with the backface material override. */
+struct FGlassMaterialProxyItem
 {
-	StaticMesh,
-	SkeletalSkinCache,
-	SkeletalBindPose,
-};
-
-struct FGlassBackfaceDrawItem
-{
-	FMatrix44f LocalToWorld = FMatrix44f::Identity;
-
-	FBufferRHIRef FallbackPositionBuffer;
-	FBufferRHIRef IndexBuffer;
-
-	/** UV buffer (channel stride = NumTexCoords). Bake data on UV1. */
-	FShaderResourceViewRHIRef UVSRV;
-	uint32 NumTexCoords = 1;
-
-	/**
-	 * Tangent buffer for model normals (static / bind-pose).
-	 * Layout matches engine StaticMeshVertexBuffer: [TangentX, TangentZ] pairs → TangentFormat=0.
-	 * SkinCache path overrides from GetCachedGeometry on RT.
-	 */
-	FShaderResourceViewRHIRef TangentSRV;
-	uint32 TangentFormat = 0; // 0 = interleaved X/Z (normal at *2+1)
-
-	const FSkeletalMeshObject* MeshObject = nullptr;
-	int32 SkinSectionIndex = INDEX_NONE;
-
-	uint32 NumVertices = 0;
-	uint32 FirstIndex = 0;
-	uint32 NumIndices = 0;
-	int32 BaseVertexIndex = 0;
-
-	EGlassBackfaceSource Source = EGlassBackfaceSource::StaticMesh;
+	/** Valid for the frame gathered in BeginRenderViewFamily. */
+	FPrimitiveSceneProxy* Proxy = nullptr;
 };
 
 struct FGlassDualPassFramePayload
 {
-	TArray<FGlassBackfaceDrawItem> Draws;
+	TArray<FGlassMaterialProxyItem> Proxies;
+
 	FTextureRenderTargetResource* PreviewRTResource = nullptr;
+	/** Lit SceneColor copy RT for material SceneColorTexture param. */
+	FTextureRenderTargetResource* SceneColorCopyResource = nullptr;
 	int32 ViewFamilyId = 0;
 
-	FTextureRHIRef DataA;
-	FTextureRHIRef DataB;
-	FTextureRHIRef EnvMap; // TextureCube RHI
-	FTextureRHIRef ColorsMap;
+	/** Render-thread material proxy for M_PhoneixGlass_Back MID (override). */
+	const FMaterialRenderProxy* BackfaceMaterialProxy = nullptr;
 };
 
 class FGlassDualPassViewExtension final : public FSceneViewExtensionBase
@@ -73,7 +45,7 @@ public:
 
 	/**
 	 * Sole draw path: after deferred lighting (lit SceneColor available).
-	 * Not PostRenderBasePass — that stage is pre-lighting GBuffer/SceneColor.
+	 * Draws glass meshes with M_PhoneixGlass_Back mesh material shaders → RT_GlassBack.
 	 */
 	virtual void PrePostProcessPass_RenderThread(
 		FRDGBuilder& GraphBuilder,
@@ -81,14 +53,12 @@ public:
 		const FPostProcessingInputs& Inputs) override;
 
 private:
-	void GatherInto(TArray<FGlassBackfaceDrawItem>& OutDraws, const FSceneViewFamily& ViewFamily);
+	void GatherGlassProxies(TArray<FGlassMaterialProxyItem>& OutProxies, const FSceneViewFamily& ViewFamily);
 
-	/** Clear RT + optional shaded backface draws. SceneColorRDG may be null (uses black). */
-	void ExecuteGlassBackfacePass(
+	void ExecuteGlassBackfaceMaterialPass(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		FRDGTextureRef SceneColorRDG,
-		bool bCopySceneColor,
 		const TCHAR* PassTag);
 
 	TSharedPtr<FGlassDualPassFramePayload, ESPMode::ThreadSafe> PublishedPayload;

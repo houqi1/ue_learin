@@ -2,11 +2,17 @@
 
 #include "GlassDualPassSubsystem.h"
 
+#include "GlassDualPassFront.h"
 #include "GlassDualPassLogs.h"
+#include "GlassDualPassMaterial.h"
 #include "GlassDualPassViewExtension.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureCube.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Misc/CoreDelegates.h"
 #include "SceneViewExtension.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
@@ -30,18 +36,155 @@ void UGlassDualPassSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	ViewExtension = FSceneViewExtensions::NewExtension<FGlassDualPassViewExtension>();
+	// Defer material load until engine is fully up (avoid any editor subsystem order issues).
+	PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddUObject(this, &UGlassDualPassSubsystem::OnPostEngineInit);
 	UE_LOG(LogGlassDualPass, Log,
-		TEXT("UGlassDualPassSubsystem initialized. r.GlassDualPass default=1. Draw @ PrePostProcess only (post-lighting)."));
+		TEXT("UGlassDualPassSubsystem initialized. Backface: Material Mesh Shader (MI M_PhoneixGlass_Back_Inst) → RT_GlassBack. Front GlassBackRT bind."));
+}
+
+void UGlassDualPassSubsystem::OnPostEngineInit()
+{
+	EnsureBackfaceMaterial();
 }
 
 void UGlassDualPassSubsystem::Deinitialize()
 {
+	if (PostEngineInitHandle.IsValid())
+	{
+		FCoreDelegates::GetOnPostEngineInit().Remove(PostEngineInitHandle);
+		PostEngineInitHandle.Reset();
+	}
 	ViewExtension.Reset();
 	PreviewRT = nullptr;
+	SceneColorCopyRT = nullptr;
 	DataA = DataB = ColorsMap = nullptr;
 	EnvMap = nullptr;
+	BackfaceMaterial = nullptr;
+	BackfaceMID = nullptr;
 	UE_LOG(LogGlassDualPass, Log, TEXT("UGlassDualPassSubsystem deinitialized"));
 	Super::Deinitialize();
+}
+
+void UGlassDualPassSubsystem::ApplyFrontGlassBindings(UWorld* World, float BackfaceWeight)
+{
+	UTextureRenderTarget2D* RT = GetOrCreatePreviewRT();
+	GlassDualPassFront::ApplyBackfaceRTToGlassMaterials(World, RT, BackfaceWeight);
+}
+
+UTextureRenderTarget2D* UGlassDualPassSubsystem::GetOrCreateSceneColorCopyRT(int32 SizeX, int32 SizeY)
+{
+	SizeX = FMath::Clamp(SizeX, 8, 1280);
+	SizeY = FMath::Clamp(SizeY, 8, 1280);
+	if (!IsValid(SceneColorCopyRT))
+	{
+		SceneColorCopyRT = NewObject<UTextureRenderTarget2D>(this, TEXT("GlassSceneColorCopy"), RF_Transient);
+		SceneColorCopyRT->RenderTargetFormat = RTF_RGBA16f;
+		SceneColorCopyRT->bAutoGenerateMips = false;
+		SceneColorCopyRT->ClearColor = FLinearColor::Black;
+		SceneColorCopyRT->InitAutoFormat(SizeX, SizeY);
+		SceneColorCopyRT->UpdateResourceImmediate(true);
+	}
+	else if (SceneColorCopyRT->SizeX != SizeX || SceneColorCopyRT->SizeY != SizeY)
+	{
+		SceneColorCopyRT->InitAutoFormat(SizeX, SizeY);
+		SceneColorCopyRT->UpdateResourceImmediate(true);
+	}
+	return SceneColorCopyRT;
+}
+
+void UGlassDualPassSubsystem::ResetBackfaceMaterialLoadAttempt()
+{
+	bTriedBackfaceMaterial = false;
+	BackfaceMaterial = nullptr;
+	BackfaceMID = nullptr;
+}
+
+void UGlassDualPassSubsystem::EnsureBackfaceMaterial()
+{
+	if (IsValid(BackfaceMaterial) && IsValid(BackfaceMID))
+	{
+		return;
+	}
+	// One attempt per session: LoadObject only (no MaterialEditingLibrary — crashes at init).
+	if (bTriedBackfaceMaterial)
+	{
+		return;
+	}
+	bTriedBackfaceMaterial = true;
+
+	BackfaceMaterial = GlassDualPassMaterial::LoadOrCreateBackfaceMaterial();
+	if (IsValid(BackfaceMaterial))
+	{
+		// DMI parent = MIC (M_PhoneixGlass_Back_Inst) or master — inherits instance params.
+		// Runtime only injects SceneColor + view metrics; effect knobs stay on the MI.
+		BackfaceMID = UMaterialInstanceDynamic::Create(BackfaceMaterial, this);
+		UE_LOG(LogGlassDualPass, Log,
+			TEXT("Backface render material ready: %s (DMI=%s) — edit MI in editor for effect params"),
+			*BackfaceMaterial->GetPathName(),
+			IsValid(BackfaceMID) ? TEXT("yes") : TEXT("no"));
+	}
+}
+
+GlassDualPassMaterial::FShadingParams UGlassDualPassSubsystem::GatherShadingParamsFromMaterial()
+{
+	EnsureBackfaceMaterial();
+	EnsureShadingTextures();
+
+	GlassDualPassMaterial::FShadingParams Params;
+	if (IsValid(BackfaceMaterial) && GlassDualPassMaterial::ReadShadingParamsFromMaterial(BackfaceMaterial, Params))
+	{
+		// Empty texture pins on the material → subsystem fallbacks (content defaults).
+		if (!IsValid(Params.DataA))
+		{
+			Params.DataA = DataA;
+		}
+		if (!IsValid(Params.DataB))
+		{
+			Params.DataB = DataB;
+		}
+		if (!IsValid(Params.EnvMap))
+		{
+			Params.EnvMap = EnvMap;
+		}
+		if (!IsValid(Params.ColorsMap))
+		{
+			Params.ColorsMap = ColorsMap;
+		}
+		return Params;
+	}
+
+	// No material asset: CVars + subsystem textures (legacy fallback).
+	GlassDualPassMaterial::FillShadingParamsFromCVars(Params);
+	Params.DataA = DataA;
+	Params.DataB = DataB;
+	Params.EnvMap = EnvMap;
+	Params.ColorsMap = ColorsMap;
+	return Params;
+}
+
+void UGlassDualPassSubsystem::InjectRuntimeIntoBackfaceMID(
+	UTexture* SceneColor,
+	const FVector2f& SceneViewRectMin,
+	const FVector2f& SceneViewSize,
+	const FVector2f& SceneBufferInvSize,
+	float SceneEdgeSoftness,
+	const FMatrix44f& ViewProjection,
+	const FVector3f& CameraWorldPos)
+{
+	EnsureBackfaceMaterial();
+	if (!IsValid(BackfaceMID))
+	{
+		return;
+	}
+	GlassDualPassMaterial::InjectRuntimeViewIntoMID(
+		BackfaceMID,
+		SceneColor,
+		SceneEdgeSoftness,
+		SceneViewRectMin,
+		SceneViewSize,
+		SceneBufferInvSize,
+		ViewProjection,
+		CameraWorldPos);
 }
 
 void UGlassDualPassSubsystem::EnsureShadingTextures()

@@ -1,7 +1,11 @@
 // Glass dual-pass backface shading → RT_GlassBack
-// VS/PS uniforms must be under VERTEXSHADER / PIXELSHADER (global shader FParameters bind).
+// Geometry: Global VS (static + SkinCache).
+// Shading: shared lib (same body as Material Custom GlassDualPassBackfaceCustom.usf).
+//
+// VS/PS uniforms must be under VERTEXSHADER / PIXELSHADER (global shader FParameters).
 
 #include "/Engine/Public/Platform.ush"
+#include "/Project/GlassDualPassBackfaceLib.ush"
 
 #ifndef PI
 #define PI 3.14159265359
@@ -16,7 +20,6 @@ float4x4 LocalToWorld;
 float4x4 LocalToWorldInverseTranspose;
 float4x4 ViewProjection;
 
-// Shared UV + tangent/normal (static + SkinCache)
 Buffer<float2> UVSRV;
 uint NumTexCoords;
 uint bHasUVs;
@@ -25,7 +28,6 @@ Buffer<float4> TangentSRV;
 uint TangentFormat; // 0 = [Tx,Tz] pairs (normal at *2+1); else one float4 normal per vertex
 uint bHasTangents;
 
-// SkinCache-only skinned positions
 Buffer<float> PositionSRV;
 
 float2 FetchUV1(uint VertexId)
@@ -42,7 +44,6 @@ float2 FetchUV1(uint VertexId)
 	return UV1;
 }
 
-// Model normal from mesh tangent buffer (never hardcoded world-up).
 float3 FetchLocalNormal(uint VertexId)
 {
 	float3 LocalN = float3(0, 0, 1);
@@ -91,13 +92,12 @@ void MainVS_SkinCache(
 #endif // VERTEXSHADER
 
 // =============================================================================
-// Pixel stage
+// Pixel stage — same Shade() as Material Custom
 // =============================================================================
 #if PIXELSHADER
 
 float4x4 ViewProjection;
 float3 CameraWorldPos;
-// SceneColor buffer layout (matches UE Common.ush ViewportUVToBufferUV)
 float2 SceneViewRectMin;
 float2 SceneViewSize;
 float2 SceneBufferInvSize;
@@ -121,67 +121,6 @@ SamplerState EnvSampler;
 SamplerState ColorsSampler;
 SamplerState SceneSampler;
 
-// UE Common.ush: ScreenPosToViewportUV
-float2 NdcToViewportUV(float2 Ndc)
-{
-	return float2(0.5f + 0.5f * Ndc.x, 0.5f - 0.5f * Ndc.y);
-}
-
-// UE Common.ush: ViewportUVToBufferUV
-float2 ViewportUVToBufferUV(float2 ViewportUV)
-{
-	const float2 PixelPos = ViewportUV * SceneViewSize + SceneViewRectMin;
-	return PixelPos * SceneBufferInvSize;
-}
-
-// Soft edge mask: 0 outside viewport, ramps near border (no hard saturate banding).
-float ViewportEdgeMask(float2 ViewportUV)
-{
-	const float2 Edge = min(ViewportUV, 1.0f - ViewportUV);
-	const float Soft = max(SceneEdgeSoftness, 1e-4f);
-	return saturate(min(Edge.x, Edge.y) / Soft);
-}
-
-// Project world → lit SceneColor buffer UV + edge weight.
-void ProjectWorldToSceneBufferUV(float3 WorldPos, out float2 BufferUV, out float EdgeMask)
-{
-	float4 Clip = mul(float4(WorldPos, 1.0f), ViewProjection);
-	const float InvW = rcp(max(abs(Clip.w), 1e-5f));
-	const float2 Ndc = Clip.xy * InvW;
-	const float2 ViewportUV = NdcToViewportUV(Ndc);
-	EdgeMask = ViewportEdgeMask(ViewportUV);
-	BufferUV = ViewportUVToBufferUV(ViewportUV);
-}
-
-float3 GetEnvColor(float3 Ray)
-{
-	// Cubemap direction sample (asset is TextureCube).
-	float3 Color = EnvMapTexture.SampleLevel(EnvSampler, normalize(Ray), 0).rgb;
-	Color = 1.0f - exp(-0.1f * Color);
-	return Color;
-}
-
-// colorsMap LUT:
-//   rd = refracted view direction (post-refract ray)
-//   n  = flipped normal (caller passes -N)
-//   thickness = 1.0 - abs(dot(n, rd));
-//   texture2D(colorsMap, vec2(thickness * 0.3 + 0.08, 1.0));
-float3 GetIridescence(float3 Rd, float3 N)
-{
-	const float3 RdN = normalize(Rd);
-	const float3 Nn = normalize(N);
-	const float Thickness = 1.0f - abs(dot(Nn, RdN)); // fake thickness = grazing
-	const float2 UV = float2(Thickness * 0.3f + 0.08f, 1.0f);
-	return ColorsMapTexture.SampleLevel(ColorsSampler, UV, 0).rgb;
-}
-
-float FresnelSchlick(float3 Ray, float3 Normal)
-{
-	const float CosTheta = abs(dot(normalize(Ray), Normal));
-	const float R0 = 0.04f;
-	return R0 + (1.0f - R0) * pow(1.0f - CosTheta, 5.0f);
-}
-
 void MainPS(
 	in float4 InPosition : SV_POSITION,
 	in float3 InWorldPos : TEXCOORD0,
@@ -189,74 +128,36 @@ void MainPS(
 	in float2 InUV1 : TEXCOORD2,
 	out float4 OutColor : SV_Target0)
 {
-	// Bake atlas (DataA/B @ UV1) temporarily replaced by mid-range constants.
-	// Ranges from UE_IMPORT_README; Dist still scales with DistScale CVar.
-	// Sample kept only so texture binds / UV1 stay live; results unused.
-	// Restore: Thickness/Peaks/Dist/Convexity/Concavity = lerp(min,max, Data*.channel)
-	const float4 DataA = DataATexture.Sample(DataSampler, InUV1);
-	const float4 DataB = DataBTexture.Sample(DataSampler, InUV1);
-	const float BakeGate = 0.0f * (DataA.r + DataB.r); // force-use samples, contribute 0
+	FGlassBackfaceShading GBF;
+	const float3 Color = GBF.Shade(
+		InWorldPos,
+		InWorldNormal,
+		InUV1,
+		CameraWorldPos,
+		ViewProjection,
+		SceneViewRectMin,
+		SceneViewSize,
+		SceneBufferInvSize,
+		SceneEdgeSoftness,
+		IorStart,
+		UseTransmittance,
+		EnvRefraction,
+		FringeCurve,
+		FringeMix,
+		FringeColor,
+		RefractionIridescence,
+		DistScale,
+		DataATexture,
+		DataBTexture,
+		DataSampler,
+		EnvMapTexture,
+		EnvSampler,
+		ColorsMapTexture,
+		ColorsSampler,
+		SceneColorTexture,
+		SceneSampler);
 
-	// Bake Thickness mid would be 0.138706; unused (colorsMap uses grazing fake thickness).
-	const float Peaks = 0.330049f + BakeGate;              // mid(-0.073783, 0.733881)
-	const float Dist = (0.170842f + BakeGate) * DistScale; // mid(0, 0.341684) * DistScale
-	const float Convexity = 0.511098f + BakeGate;          // mid(0.022199, 0.999997)
-	const float Concavity = 0.481145f + BakeGate;          // mid(0, 0.962289)
-	const float VCurvature = Convexity - Concavity;        // ~0.03
-
-	float3 Normal = normalize(InWorldNormal);
-	const float3 ToCamera = normalize(CameraWorldPos - InWorldPos);
-	if (dot(Normal, ToCamera) < 0.0f)
-	{
-		Normal = -Normal;
-	}
-
-	const float3 ViewDirection = normalize(InWorldPos - CameraWorldPos);
-	const float DotNormalView = dot(Normal, ViewDirection);
-
-	const float Eta = 1.0f / max(IorStart, 1.001f);
-	float3 Refraction = refract(ViewDirection, Normal, Eta);
-	if (dot(Refraction, Refraction) < 1e-8f)
-	{
-		Refraction = reflect(ViewDirection, Normal);
-	}
-	Refraction = normalize(Refraction);
-
-	const float Transmittance = 1.0f - UseTransmittance * FresnelSchlick(Refraction, Normal);
-
-	// Refracted world → ViewportUV → SceneColor BufferUV (view rect + buffer extent).
-	// No saturate on UV (that clamps off-screen samples to edges and bands).
-	const float3 OffsetPos = InWorldPos + Refraction * Dist;
-	float2 SceneBufferUV;
-	float SceneEdgeMask;
-	ProjectWorldToSceneBufferUV(OffsetPos, SceneBufferUV, SceneEdgeMask);
-
-	float3 Texel = 0.0f.xxx;
-	if (SceneEdgeMask > 0.0f)
-	{
-		Texel = SceneColorTexture.SampleLevel(SceneSampler, SceneBufferUV, 0).rgb * SceneEdgeMask;
-	}
-
-	const float3 Ray = Refraction;
-	if (EnvRefraction > 0.0f)
-	{
-		Texel += GetEnvColor(Ray) * EnvRefraction;
-	}
-
-	// colorsMap: rd = post-refraction view ray; n = flipped face normal; UV.y = 1.
-	const float3 Lut = GetIridescence(Refraction, -Normal);
-	const float3 IridTint = RefractionIridescence * (Lut - 1.0f) + 1.0f;
-	Texel *= IridTint;
-
-	const float Fringeness =
-		pow(saturate(1.0f - abs(DotNormalView)), max(FringeCurve, 0.01f)) * FringeMix
-		* saturate(0.35f + 0.65f * saturate(Peaks));
-	Texel = lerp(Texel, FringeColor, saturate(Fringeness));
-
-	float3 Color = Texel * Transmittance
-		* (1.0f + VCurvature * abs(dot(Ray, Normal)));
-
-	OutColor = float4(max(Color, 0.0f), 1.0f);
+	OutColor = float4(Color, 1.0f);
 }
 
 #endif // PIXELSHADER

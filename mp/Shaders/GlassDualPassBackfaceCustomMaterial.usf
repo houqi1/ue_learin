@@ -1,0 +1,86 @@
+// =============================================================================
+// Material Custom body for M_PhoneixGlass_Back — NO Custom input pins required.
+// Uses MaterialPixelParameters (WorldPos / Normal / Camera) like engine materials.
+// Same shading structure as GlassDualPassBackfaceLib.ush (refract / fringe / irid).
+// =============================================================================
+
+struct FGlassBackfaceShading
+{
+	float FresnelSchlick(float3 Ray, float3 Normal)
+	{
+		const float CosTheta = abs(dot(normalize(Ray), Normal));
+		const float R0 = 0.04f;
+		return R0 + (1.0f - R0) * pow(1.0f - CosTheta, 5.0f);
+	}
+
+	float3 GetIridescence(float3 Rd, float3 N)
+	{
+		const float Thickness = 1.0f - abs(dot(normalize(N), normalize(Rd)));
+		const float U = saturate(Thickness * 0.3f + 0.08f);
+		return float3(
+			0.5f + 0.5f * sin(U * 6.28318f),
+			0.5f + 0.5f * sin(U * 6.28318f + 2.094f),
+			0.5f + 0.5f * sin(U * 6.28318f + 4.189f));
+	}
+
+	float3 Shade(float3 InWorldPos, float3 InWorldNormal, float3 InCameraWorldPos)
+	{
+		const float Peaks = 0.330049f;
+		const float Dist = 0.170842f;
+		const float VCurvature = 0.03f;
+		const float IorStart = 1.45f;
+		const float UseTransmittance = 1.0f;
+		const float EnvRefraction = 0.35f;
+		const float FringeCurve = 2.0f;
+		const float FringeMix = 0.25f;
+		const float3 FringeColor = float3(0.55f, 0.75f, 1.0f);
+		const float RefractionIridescence = 0.85f;
+
+		float3 Normal = normalize(InWorldNormal);
+		const float3 ToCamera = normalize(InCameraWorldPos - InWorldPos);
+		if (dot(Normal, ToCamera) < 0.0f)
+		{
+			Normal = -Normal;
+		}
+
+		const float3 ViewDirection = normalize(InWorldPos - InCameraWorldPos);
+		const float DotNormalView = dot(Normal, ViewDirection);
+
+		const float Eta = 1.0f / max(IorStart, 1.001f);
+		float3 Refraction = refract(ViewDirection, Normal, Eta);
+		if (dot(Refraction, Refraction) < 1e-8f)
+		{
+			Refraction = reflect(ViewDirection, Normal);
+		}
+		Refraction = normalize(Refraction);
+
+		const float Transmittance = 1.0f - UseTransmittance * FresnelSchlick(Refraction, Normal);
+
+		// Stand-ins for SceneColor / Env (full path uses real textures in Global PS)
+		float3 Texel = float3(0.12f, 0.18f, 0.28f)
+			+ float3(0.35f, 0.40f, 0.50f) * saturate(Refraction.z * 0.5f + 0.5f);
+		Texel += float3(0.40f, 0.45f, 0.55f) * saturate(Refraction.y * 0.5f + 0.5f) * EnvRefraction;
+
+		const float3 Lut = GetIridescence(Refraction, -Normal);
+		const float3 IridTint = RefractionIridescence * (Lut - 1.0f) + 1.0f;
+		Texel *= IridTint;
+
+		const float Fringeness =
+			pow(saturate(1.0f - abs(DotNormalView)), max(FringeCurve, 0.01f)) * FringeMix
+			* saturate(0.35f + 0.65f * saturate(Peaks));
+		Texel = lerp(Texel, FringeColor, saturate(Fringeness));
+
+		float3 Color = Texel * Transmittance
+			* (1.0f + VCurvature * abs(dot(Refraction, Normal)));
+		Color += 0.02f * Dist * saturate(dot(Refraction, Normal));
+		return max(Color, 0.0f);
+	}
+};
+
+// MaterialPixelParameters — available inside Custom without extra pins
+float3 WorldPos = GetWorldPosition(Parameters);
+float3 WorldNormal = Parameters.WorldNormal;
+float3 CameraWorldPos = ResolvedView.WorldCameraOrigin;
+
+FGlassBackfaceShading GBF;
+return GBF.Shade(WorldPos, WorldNormal, CameraWorldPos);

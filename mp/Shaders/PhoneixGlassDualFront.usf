@@ -1,22 +1,16 @@
 // =============================================================================
-// PhoneixGlass.usf — refracted SceneIn (tint / rim / glow)
+// PhoneixGlassDualFront.usf — front glass WITH dual-pass backface RT mix
 //
-// MUST be valid inside Material CustomExpression() — no free functions.
-// All helpers live as struct methods (UE restriction).
+// Drop-in replacement for PhoneixGlass.usf Custom body when closing the loop:
+//   Backface pass writes RT_GlassBack → front samples it into SceneIn mix.
 //
-// Custom: CMOT_Float3 — paste body or #include "/Project/PhoneixGlass.usf"
+// Custom: CMOT_Float3
+//   #include "/Project/PhoneixGlassDualFront.usf"
 //
-// Inputs: Normal, CameraVector, SceneIn, BaseTint, EdgeTint, Thickness,
-//         IOR, RefractStrength, FBias, FScale, FPower, Glow, Opacity
-//
-// Dual-pass front (sample RT_GlassBack): use PhoneixGlassDualFront.usf instead
-//   and add Custom inputs GlassBackRT, ScreenUV, BackfaceWeight.
-//
-// Environment reflection is NOT mixed here. Graph iridescence only:
-//   lut  = colorsMap (view/normal row)
-//   iridTint = reflectionIridescence * (lut - 1) + 1   // lerp(1, lut, w)
-//   irid = (EnvMap * EnvReflectionIntensity) * IridFresnel * iridTint
-//   final = glass + irid
+// All PhoneixGlass.usf inputs PLUS:
+//   GlassBackRT    Texture2D  (param name GlassBackRT — subsystem sets this)
+//   ScreenUV       float2     (viewport UV 0..1)
+//   BackfaceWeight float      (0=off, 1=full backface; subsystem sets default)
 // =============================================================================
 
 struct FPhoneixGlass
@@ -69,8 +63,12 @@ float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
 float NoV = saturate(dot(N, V));
 
+float WBack = saturate(BackfaceWeight);
+float3 BackSample = GlassBackRT.SampleLevel(GlassBackRTSampler, ScreenUV, 0).rgb;
+float3 SceneMix = lerp(SceneIn, BackSample, WBack);
+
 float RimFresnel = PG.Rim(NoV, FBias, FScale, FPower);
-float3 Body = PG.ComposeBody(SceneIn, BaseTint, Thickness, Opacity);
+float3 Body = PG.ComposeBody(SceneMix, BaseTint, Thickness, Opacity);
 float3 Color = PG.ApplyEdgeGlow(Body, EdgeTint, Thickness, RimFresnel, Glow);
 
 return Color;

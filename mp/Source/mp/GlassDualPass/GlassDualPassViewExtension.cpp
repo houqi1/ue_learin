@@ -1,79 +1,59 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Material Shader backface pass: M_PhoneixGlass_Back → RT_GlassBack (no Global PS).
 
 #include "GlassDualPassViewExtension.h"
 
-#include "GlassDualPassBackfaceShaders.h"
+#include "GlassDualPassFront.h"
 #include "GlassDualPassLogs.h"
+#include "GlassDualPassMaterial.h"
+#include "GlassDualPassMaterialMesh.h"
 #include "GlassDualPassSubsystem.h"
 
 #include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "Components/SkinnedMeshComponent.h"
-#include "Engine/SkeletalMesh.h"
-#include "Engine/StaticMesh.h"
+#include "Engine/Engine.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "Engine/TextureRenderTarget.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FXRenderingUtils.h"
 #include "GameFramework/Actor.h"
-#include "GlobalShader.h"
-#include "CachedGeometry.h"
-#include "CommonRenderResources.h"
-#include "Engine/Texture2D.h"
-#include "Engine/TextureCube.h"
-#include "GlobalRenderResources.h"
-#include "Materials/Material.h"
+#include "HAL/IConsoleManager.h"
+#include "InstanceCulling/InstanceCullingContext.h"
 #include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
-#include "PipelineStateCache.h"
-#include "PooledRenderTarget.h"
+#include "MeshPassProcessor.inl"
 #include "PostProcess/PostProcessInputs.h"
+#include "PrimitiveSceneInfo.h"
+#include "PrimitiveSceneProxy.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
-#include "RHI.h"
-#include "RHICommandList.h"
-#include "RHIResources.h"
-#include "RHIStaticStates.h"
-#include "SceneTexturesConfig.h"
+#include "ScenePrivate.h"
+#include "SceneRendering.h"
 #include "SceneView.h"
-#include "ShaderParameterMacros.h"
-#include "ShaderParameterStruct.h"
-#include "SkeletalRenderPublic.h"
-#include "StaticMeshResources.h"
+#include "SimpleMeshDrawCommandPass.h"
 #include "TextureResource.h"
-
-#include "HAL/IConsoleManager.h"
-#include "Engine/Engine.h"
-#include "FXRenderingUtils.h"
 
 /**
  * r.GlassDualPass
  * 0: disabled
- * 1: clear RT_GlassBack + draw shaded backfaces (BasePass + lit upgrade @ PrePostProcess)
+ * 1: clear RT_GlassBack + material-shader backfaces
  * 2: clear RT_GlassBack to debug magenta only
  */
 static TAutoConsoleVariable<int32> CVarGlassDualPass(
 	TEXT("r.GlassDualPass"),
 	1,
-	TEXT("D1 glass dual-pass.\n")
+	TEXT("Glass dual-pass.\n")
 	TEXT("0: disabled\n")
-	TEXT("1: clear RT_GlassBack + draw backfaces (M_PhoneixGlass / MIs)\n")
+	TEXT("1: material shader backfaces (M_PhoneixGlass_Back) → RT_GlassBack\n")
 	TEXT("2: clear RT_GlassBack to debug magenta only"),
 	ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<FString> CVarGlassDualPassMasterMaterial(
 	TEXT("r.GlassDualPass.MasterMaterial"),
 	TEXT("M_PhoneixGlass"),
-	TEXT("Asset name of the glass master material."),
-	ECVF_Default);
-
-static TAutoConsoleVariable<int32> CVarGlassDualPassSkeletalMode(
-	TEXT("r.GlassDualPass.SkeletalMode"),
-	1,
-	TEXT("0=no skeletal, 1=GPU SkinCache positions, 2=bind-pose only."),
+	TEXT("Front glass master material name (mesh filter)."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarGlassMaxRTSize(
@@ -82,17 +62,22 @@ static TAutoConsoleVariable<int32> CVarGlassMaxRTSize(
 	TEXT("Max dimension for RT_GlassBack (VRAM cap)."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarGlassIor(TEXT("r.GlassDualPass.IOR"), 1.45f, TEXT("Backface IOR."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassUseTransmittance(TEXT("r.GlassDualPass.UseTransmittance"), 1.f, TEXT("Fresnel transmittance scale."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassEnvRefraction(TEXT("r.GlassDualPass.EnvRefraction"), 0.35f, TEXT("Env cubemap add."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassFringeCurve(TEXT("r.GlassDualPass.FringeCurve"), 2.f, TEXT("Fringe falloff."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassFringeMix(TEXT("r.GlassDualPass.FringeMix"), 0.25f, TEXT("Fringe mix."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassRefractionIridescence(TEXT("r.GlassDualPass.RefractionIridescence"), 0.85f, TEXT("colorsMap mix."), ECVF_RenderThreadSafe);
-static TAutoConsoleVariable<float> CVarGlassDistScale(TEXT("r.GlassDualPass.DistScale"), 1.f, TEXT("Baked Dist scale."), ECVF_RenderThreadSafe);
+// Fallback only when M_PhoneixGlass_Back is missing (effect params live on material).
+static TAutoConsoleVariable<float> CVarGlassIor(TEXT("r.GlassDualPass.IOR"), 1.45f, TEXT("Fallback IOR if backface material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassUseTransmittance(TEXT("r.GlassDualPass.UseTransmittance"), 1.f, TEXT("Fallback transmittance if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassEnvRefraction(TEXT("r.GlassDualPass.EnvRefraction"), 0.35f, TEXT("Fallback env refraction if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassFringeCurve(TEXT("r.GlassDualPass.FringeCurve"), 2.f, TEXT("Fallback fringe curve if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassFringeMix(TEXT("r.GlassDualPass.FringeMix"), 0.25f, TEXT("Fallback fringe mix if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassRefractionIridescence(TEXT("r.GlassDualPass.RefractionIridescence"), 0.85f, TEXT("Fallback iridescence if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassDistScale(TEXT("r.GlassDualPass.DistScale"), 1.f, TEXT("Fallback DistScale if material missing."), ECVF_RenderThreadSafe);
+static TAutoConsoleVariable<float> CVarGlassFrontWeight(
+	TEXT("r.GlassDualPass.FrontWeight"),
+	0.65f,
+	TEXT("Front glass DMI BackfaceWeight (0=ignore RT, 1=full). Requires PhoneixGlassDualFront.usf."),
+	ECVF_Default);
 
 static const FLinearColor GGlassBackDebugMagenta(1.f, 0.f, 1.f, 1.f);
 static const FLinearColor GGlassBackClearBlack(0.f, 0.f, 0.f, 0.f);
-static const FVector3f GGlassFringeColor(0.55f, 0.75f, 1.0f);
 
 static bool ShouldGatherForViewFamily(const FSceneViewFamily& ViewFamily)
 {
@@ -121,8 +106,18 @@ static bool IsPrimaryNonCaptureView(const FSceneView& View)
 	return true;
 }
 
-BEGIN_SHADER_PARAMETER_STRUCT(FGlassBackfacePassParameters, )
+/**
+ * Mesh material shaders require static UBs at fixed slots (View, Scene, InstanceCulling).
+ * RDG binds them from this pass parameter struct — all three must be non-null.
+ * Do NOT use AddSimpleMeshPass with null InstanceCullingManager: BuildRenderingCommands
+ * Memzeros params and leaves Scene=null when the manager is missing.
+ */
+BEGIN_SHADER_PARAMETER_STRUCT(FGlassMatBackfacePassParameters, )
+	SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
+	// RDG deps: ensure lit SceneColor is copied into the UTexture RT before mesh samples it.
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorCopyForMaterial)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
@@ -173,157 +168,11 @@ static bool ComponentIsGlassDualPass(const UMeshComponent* MeshComp)
 	return false;
 }
 
-static bool MaterialSlotIsGlass(const UMeshComponent* MeshComp, int32 MaterialIndex)
-{
-	return IsValid(MeshComp) && MaterialIsGlassDualPass(MeshComp->GetMaterial(MaterialIndex));
-}
-
-static bool TryBuildDrawItem_Static(const UStaticMeshComponent* SMC, FGlassBackfaceDrawItem& OutItem)
-{
-	UStaticMesh* Mesh = SMC->GetStaticMesh();
-	if (!IsValid(Mesh))
-	{
-		return false;
-	}
-
-	const FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
-	if (!RenderData || RenderData->LODResources.Num() == 0)
-	{
-		return false;
-	}
-
-	const FStaticMeshLODResources& LOD = RenderData->LODResources[0];
-	FRHIBuffer* PositionRHI = LOD.VertexBuffers.PositionVertexBuffer.VertexBufferRHI.GetReference();
-	FRHIBuffer* IndexRHI = LOD.IndexBuffer.IndexBufferRHI.GetReference();
-	if (!PositionRHI || !IndexRHI)
-	{
-		return false;
-	}
-
-	const uint32 NumVertices = LOD.VertexBuffers.PositionVertexBuffer.GetNumVertices();
-	const uint32 NumIndices = static_cast<uint32>(LOD.IndexBuffer.GetNumIndices());
-	if (NumVertices == 0 || NumIndices < 3)
-	{
-		return false;
-	}
-
-	if (LOD.Sections.Num() > 0)
-	{
-		bool bAnyGlassSection = false;
-		for (int32 SecIdx = 0; SecIdx < LOD.Sections.Num(); ++SecIdx)
-		{
-			if (MaterialSlotIsGlass(SMC, LOD.Sections[SecIdx].MaterialIndex))
-			{
-				bAnyGlassSection = true;
-				break;
-			}
-		}
-		if (!bAnyGlassSection)
-		{
-			return false;
-		}
-	}
-
-	OutItem.LocalToWorld = FMatrix44f(SMC->GetComponentTransform().ToMatrixWithScale());
-	OutItem.FallbackPositionBuffer = PositionRHI;
-	OutItem.IndexBuffer = IndexRHI;
-	OutItem.UVSRV = LOD.VertexBuffers.StaticMeshVertexBuffer.GetTexCoordsSRV();
-	OutItem.NumTexCoords = LOD.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
-	// Model normals: TangentZ in interleaved [Tx, Tz] pairs (TangentFormat=0).
-	OutItem.TangentSRV = LOD.VertexBuffers.StaticMeshVertexBuffer.GetTangentsSRV();
-	OutItem.TangentFormat = 0;
-	OutItem.MeshObject = nullptr;
-	OutItem.SkinSectionIndex = INDEX_NONE;
-	OutItem.NumVertices = NumVertices;
-	OutItem.FirstIndex = 0;
-	OutItem.NumIndices = NumIndices;
-	OutItem.BaseVertexIndex = 0;
-	OutItem.Source = EGlassBackfaceSource::StaticMesh;
-	return true;
-}
-
-static void AppendSkeletalGlassDraws(USkeletalMeshComponent* SKC, TArray<FGlassBackfaceDrawItem>& OutDraws)
-{
-	if (!IsValid(SKC) || !SKC->GetSkeletalMeshAsset())
-	{
-		return;
-	}
-
-	const int32 SkeletalMode = CVarGlassDualPassSkeletalMode.GetValueOnGameThread();
-	if (SkeletalMode == 0)
-	{
-		return;
-	}
-
-	FSkeletalMeshRenderData* RenderData = SKC->GetSkeletalMeshRenderData();
-	if (!RenderData || RenderData->LODRenderData.Num() == 0)
-	{
-		return;
-	}
-
-	const FSkeletalMeshObject* MeshObject = SKC->GetMeshObject();
-	int32 LODIndex = SKC->GetPredictedLODLevel();
-	if (MeshObject)
-	{
-		LODIndex = MeshObject->GetLOD();
-	}
-	LODIndex = FMath::Clamp(LODIndex, 0, RenderData->LODRenderData.Num() - 1);
-	FSkeletalMeshLODRenderData& LOD = RenderData->LODRenderData[LODIndex];
-
-	const FRawStaticIndexBuffer16or32Interface* IndexBuffer = LOD.MultiSizeIndexContainer.GetIndexBuffer();
-	if (!IndexBuffer)
-	{
-		return;
-	}
-
-	FRHIBuffer* IndexRHI = IndexBuffer->IndexBufferRHI.GetReference();
-	FRHIBuffer* BindPosePosRHI = LOD.StaticVertexBuffers.PositionVertexBuffer.VertexBufferRHI.GetReference();
-	if (!IndexRHI)
-	{
-		return;
-	}
-
-	const bool bWantSkinCache = (SkeletalMode == 1) && MeshObject && MeshObject->IsGPUSkinMesh();
-	const FMatrix44f LocalToWorld(SKC->GetComponentTransform().ToMatrixWithScale());
-	const FShaderResourceViewRHIRef UVSRV = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetTexCoordsSRV();
-	const FShaderResourceViewRHIRef TangentSRV = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetTangentsSRV();
-	const uint32 NumTexCoords = LOD.StaticVertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
-
-	for (int32 SecIdx = 0; SecIdx < LOD.RenderSections.Num(); ++SecIdx)
-	{
-		const FSkelMeshRenderSection& Section = LOD.RenderSections[SecIdx];
-		if (Section.NumTriangles == 0 || !MaterialSlotIsGlass(SKC, Section.MaterialIndex))
-		{
-			continue;
-		}
-
-		FGlassBackfaceDrawItem Item;
-		Item.LocalToWorld = LocalToWorld;
-		Item.IndexBuffer = IndexRHI;
-		Item.FallbackPositionBuffer = BindPosePosRHI;
-		Item.UVSRV = UVSRV;
-		Item.NumTexCoords = NumTexCoords;
-		Item.TangentSRV = TangentSRV;
-		Item.TangentFormat = 0;
-		Item.FirstIndex = Section.BaseIndex;
-		Item.NumIndices = Section.NumTriangles * 3;
-		Item.NumVertices = Section.NumVertices;
-		Item.BaseVertexIndex = static_cast<int32>(Section.BaseVertexIndex);
-		Item.SkinSectionIndex = SecIdx;
-		Item.MeshObject = bWantSkinCache ? MeshObject : nullptr;
-		Item.Source = bWantSkinCache ? EGlassBackfaceSource::SkeletalSkinCache : EGlassBackfaceSource::SkeletalBindPose;
-
-		if (Item.NumIndices >= 3 && (Item.FallbackPositionBuffer || Item.MeshObject))
-		{
-			OutDraws.Add(MoveTemp(Item));
-		}
-	}
-}
-
 FGlassDualPassViewExtension::FGlassDualPassViewExtension(const FAutoRegister& AutoRegister)
 	: FSceneViewExtensionBase(AutoRegister)
 {
-	UE_LOG(LogGlassDualPass, Log, TEXT("FGlassDualPassViewExtension registered (draw only @ PrePostProcess / post-lighting)"));
+	UE_LOG(LogGlassDualPass, Log,
+		TEXT("FGlassDualPassViewExtension registered — Material Shader backface (M_PhoneixGlass_Back) @ PrePostProcess"));
 }
 
 bool FGlassDualPassViewExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
@@ -331,9 +180,9 @@ bool FGlassDualPassViewExtension::IsActiveThisFrame_Internal(const FSceneViewExt
 	return CVarGlassDualPass.GetValueOnAnyThread() != 0;
 }
 
-void FGlassDualPassViewExtension::GatherInto(TArray<FGlassBackfaceDrawItem>& OutDraws, const FSceneViewFamily& ViewFamily)
+void FGlassDualPassViewExtension::GatherGlassProxies(TArray<FGlassMaterialProxyItem>& OutProxies, const FSceneViewFamily& ViewFamily)
 {
-	OutDraws.Reset();
+	OutProxies.Reset();
 
 	UWorld* World = ViewFamily.Scene ? ViewFamily.Scene->GetWorld() : nullptr;
 	if (!World)
@@ -364,11 +213,9 @@ void FGlassDualPassViewExtension::GatherInto(TArray<FGlassBackfaceDrawItem>& Out
 			{
 				continue;
 			}
-
-			FGlassBackfaceDrawItem Item;
-			if (TryBuildDrawItem_Static(SMC, Item))
+			if (FPrimitiveSceneProxy* Proxy = SMC->SceneProxy)
 			{
-				OutDraws.Add(MoveTemp(Item));
+				OutProxies.Add({Proxy});
 				++NumStatic;
 			}
 		}
@@ -385,11 +232,9 @@ void FGlassDualPassViewExtension::GatherInto(TArray<FGlassBackfaceDrawItem>& Out
 			{
 				continue;
 			}
-
-			const int32 Before = OutDraws.Num();
-			AppendSkeletalGlassDraws(SKC, OutDraws);
-			if (OutDraws.Num() > Before)
+			if (FPrimitiveSceneProxy* Proxy = SKC->SceneProxy)
 			{
+				OutProxies.Add({Proxy});
 				++NumSkeletal;
 			}
 		}
@@ -401,8 +246,8 @@ void FGlassDualPassViewExtension::GatherInto(TArray<FGlassBackfaceDrawItem>& Out
 	{
 		LastGatherLogSeconds = Now;
 		UE_LOG(LogGlassDualPass, Log,
-			TEXT("Glass gather: %d draw(s) [static=%d skeletal=%d]"),
-			OutDraws.Num(), NumStatic, NumSkeletal);
+			TEXT("Glass material gather: %d proxy(s) [static=%d skeletal=%d]"),
+			OutProxies.Num(), NumStatic, NumSkeletal);
 	}
 }
 
@@ -413,12 +258,7 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 		return;
 	}
 
-	if (!ShouldGatherForViewFamily(InViewFamily))
-	{
-		return;
-	}
-
-	if (!GEngine)
+	if (!ShouldGatherForViewFamily(InViewFamily) || !GEngine)
 	{
 		return;
 	}
@@ -435,7 +275,6 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 		return;
 	}
 
-	// Never leave Step2 magenta as the asset clear color.
 	if (PreviewRT->ClearColor != GGlassBackClearBlack)
 	{
 		PreviewRT->ClearColor = GGlassBackClearBlack;
@@ -459,15 +298,6 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 	FTextureRenderTargetResource* RTResource = Sys->GetPreviewRTResource();
 	if (!RTResource)
 	{
-		static double LastWarn = 0.0;
-		const double Now = FPlatformTime::Seconds();
-		if (Now - LastWarn > 2.0)
-		{
-			LastWarn = Now;
-			UE_LOG(LogGlassDualPass, Warning,
-				TEXT("Preview RT resource null (RT=%s %dx%d)"),
-				*GetNameSafe(PreviewRT), PreviewRT->SizeX, PreviewRT->SizeY);
-		}
 		return;
 	}
 
@@ -478,22 +308,96 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 	Payload->ViewFamilyId = NextViewFamilyId++;
 
 	Sys->EnsureShadingTextures();
-	auto GrabTex = [](UTexture* T) -> FTextureRHIRef
+	Sys->EnsureBackfaceMaterial();
+
+	// SceneColor copy size for material SceneColorTexture
+	int32 CopyW = 1280;
+	int32 CopyH = 720;
+	const int32 MaxDim = FMath::Max(64, CVarGlassMaxRTSize.GetValueOnGameThread());
+	if (InViewFamily.RenderTarget)
 	{
-		if (!IsValid(T) || !T->GetResource())
+		const FIntPoint RTSize = InViewFamily.RenderTarget->GetSizeXY();
+		CopyW = FMath::Max(RTSize.X, 1);
+		CopyH = FMath::Max(RTSize.Y, 1);
+	}
+	else if (InViewFamily.Views.Num() > 0 && InViewFamily.Views[0])
+	{
+		const FIntRect& VR = InViewFamily.Views[0]->UnconstrainedViewRect;
+		CopyW = FMath::Max(VR.Width(), 1);
+		CopyH = FMath::Max(VR.Height(), 1);
+	}
+	if (CopyW > MaxDim || CopyH > MaxDim)
+	{
+		const float Scale = static_cast<float>(MaxDim) / static_cast<float>(FMath::Max(CopyW, CopyH));
+		CopyW = FMath::Max(8, FMath::RoundToInt(CopyW * Scale));
+		CopyH = FMath::Max(8, FMath::RoundToInt(CopyH * Scale));
+	}
+	UTextureRenderTarget2D* SceneCopy = Sys->GetOrCreateSceneColorCopyRT(CopyW, CopyH);
+
+	// 1) Sync MIC → DMI first (artist knobs). MUST run before SceneColor inject —
+	//    CopyParameterOverrides would wipe SceneColorTexture if done after.
+	if (UMaterialInstanceDynamic* MID = Sys->GetBackfaceMaterialMID())
+	{
+		if (UMaterialInstance* ParentMI = Cast<UMaterialInstance>(Sys->GetBackfaceMaterial()))
 		{
-			return nullptr;
+			if (!Cast<UMaterialInstanceDynamic>(ParentMI))
+			{
+				MID->CopyParameterOverrides(ParentMI);
+			}
 		}
-		return T->GetResource()->TextureRHI;
-	};
-	Payload->DataA = GrabTex(Sys->GetDataA());
-	Payload->DataB = GrabTex(Sys->GetDataB());
-	Payload->EnvMap = GrabTex(Sys->GetEnvMap());
-	Payload->ColorsMap = GrabTex(Sys->GetColorsMap());
+	}
+
+	// 2) Runtime inject last: SceneColor RT + view metrics / ViewProjection (refraction UV).
+	if (InViewFamily.Views.Num() > 0 && InViewFamily.Views[0])
+	{
+		const FSceneView& View0 = *InViewFamily.Views[0];
+		// Match Global-path style: raw view rect + buffer size for ViewportUV→BufferUV.
+		const FIntRect ViewRect = View0.UnconstrainedViewRect;
+		const FVector2f RectMin(static_cast<float>(ViewRect.Min.X), static_cast<float>(ViewRect.Min.Y));
+		const FVector2f ViewSize(
+			static_cast<float>(FMath::Max(ViewRect.Width(), 1)),
+			static_cast<float>(FMath::Max(ViewRect.Height(), 1)));
+		// Buffer inv must match SceneCopy extent (where we blit lit SceneColor).
+		const FVector2f BufInv(
+			1.f / static_cast<float>(FMath::Max(CopyW, 1)),
+			1.f / static_cast<float>(FMath::Max(CopyH, 1)));
+		const FMatrix44f VP(View0.ViewMatrices.GetWorldToClip());
+		const FVector3f Cam(View0.ViewMatrices.GetViewOrigin());
+
+		GlassDualPassMaterial::FShadingParams Shade;
+		if (IsValid(Sys->GetBackfaceMaterial()))
+		{
+			GlassDualPassMaterial::ReadShadingParamsFromMaterial(Sys->GetBackfaceMaterial(), Shade);
+		}
+		const float EdgeSoft = Shade.bFromMaterial ? Shade.SceneEdgeSoftness : 0.02f;
+
+		Sys->InjectRuntimeIntoBackfaceMID(SceneCopy, RectMin, ViewSize, BufInv, EdgeSoft, VP, Cam);
+	}
+
+	// Mesh override uses DMI proxy (has SceneColor after inject).
+	if (UMaterialInstanceDynamic* MID = Sys->GetBackfaceMaterialMID())
+	{
+		Payload->BackfaceMaterialProxy = MID->GetRenderProxy();
+	}
+	else if (UMaterialInterface* Mat = Sys->GetBackfaceMaterial())
+	{
+		Payload->BackfaceMaterialProxy = Mat->GetRenderProxy();
+	}
+
+	Payload->SceneColorCopyResource = IsValid(SceneCopy) ? SceneCopy->GameThread_GetRenderTargetResource() : nullptr;
 
 	if (Mode == 1)
 	{
-		GatherInto(Payload->Draws, InViewFamily);
+		GatherGlassProxies(Payload->Proxies, InViewFamily);
+	}
+
+	// Front closed loop
+	if (Mode == 1 && InViewFamily.Scene)
+	{
+		if (UWorld* World = InViewFamily.Scene->GetWorld())
+		{
+			Sys->ApplyFrontGlassBindings(World, CVarGlassFrontWeight.GetValueOnGameThread());
+		}
 	}
 
 	{
@@ -502,11 +406,10 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 	}
 }
 
-void FGlassDualPassViewExtension::ExecuteGlassBackfacePass(
+void FGlassDualPassViewExtension::ExecuteGlassBackfaceMaterialPass(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView& View,
 	FRDGTextureRef SceneColorRDG,
-	bool bCopySceneColor,
 	const TCHAR* PassTag)
 {
 	const int32 Mode = CVarGlassDualPass.GetValueOnRenderThread();
@@ -538,7 +441,6 @@ void FGlassDualPassViewExtension::ExecuteGlassBackfacePass(
 	const FRDGTextureRef GlassBackRDG = GraphBuilder.RegisterExternalTexture(
 		CreateRenderTarget(TextureRHI, TEXT("GlassBackPreviewRT")));
 
-	// Mode 2 = magenta debug; Mode 1 = black then draw.
 	const FLinearColor ClearColor = (Mode == 2) ? GGlassBackDebugMagenta : GGlassBackClearBlack;
 	AddClearRenderTargetPass(GraphBuilder, GlassBackRDG, ClearColor);
 
@@ -547,361 +449,227 @@ void FGlassDualPassViewExtension::ExecuteGlassBackfacePass(
 		return;
 	}
 
-	if (Payload->Draws.Num() == 0)
+	if (!Payload->BackfaceMaterialProxy)
+	{
+		static double LastNoMat = 0.0;
+		const double Now = FPlatformTime::Seconds();
+		if (Now - LastNoMat > 2.0)
+		{
+			LastNoMat = Now;
+			UE_LOG(LogGlassDualPass, Warning,
+				TEXT("[%s] No M_PhoneixGlass_Back material proxy — RT cleared only. Create/reload material."),
+				PassTag);
+		}
+		return;
+	}
+
+	if (Payload->Proxies.Num() == 0)
 	{
 		static double LastEmpty = 0.0;
 		const double Now = FPlatformTime::Seconds();
 		if (Now - LastEmpty > 2.0)
 		{
 			LastEmpty = Now;
-			UE_LOG(LogGlassDualPass, Log, TEXT("[%s] Mode1 clear black, 0 draws (no M_PhoneixGlass mesh?)"), PassTag);
+			UE_LOG(LogGlassDualPass, Log, TEXT("[%s] Mode1 clear black, 0 glass proxies"), PassTag);
 		}
 		return;
 	}
 
-	// Resolve SceneColor for refraction (may be null → black).
+	// Lit SceneColor (copy-before-sample) → UTexture RT bound as material SceneColorTexture.
 	FRDGTextureRef SceneColorSample = nullptr;
 	if (SceneColorRDG)
 	{
-		if (bCopySceneColor)
-		{
-			SceneColorSample = GraphBuilder.CreateTexture(SceneColorRDG->Desc, TEXT("GlassSceneColorCopy"));
-			AddCopyTexturePass(GraphBuilder, SceneColorRDG, SceneColorSample);
-		}
-		else
-		{
-			SceneColorSample = SceneColorRDG;
-		}
+		SceneColorSample = GraphBuilder.CreateTexture(SceneColorRDG->Desc, TEXT("GlassSceneColorCopy"));
+		AddCopyTexturePass(GraphBuilder, SceneColorRDG, SceneColorSample);
 	}
-
-	// Fallback: tiny black RDG texture if no SceneColor is available.
 	if (!SceneColorSample)
 	{
 		const FRDGTextureDesc BlackDesc = FRDGTextureDesc::Create2D(
-			FIntPoint(8, 8),
-			PF_FloatRGBA,
-			FClearValueBinding::Black,
+			FIntPoint(8, 8), PF_FloatRGBA, FClearValueBinding::Black,
 			TexCreate_ShaderResource | TexCreate_RenderTargetable);
 		SceneColorSample = GraphBuilder.CreateTexture(BlackDesc, TEXT("GlassBlackSceneFallback"));
 		AddClearRenderTargetPass(GraphBuilder, SceneColorSample, FLinearColor::Black);
 	}
 
-	const FMatrix44f ViewProjection44(View.ViewMatrices.GetWorldToClip());
-	const FIntPoint TextureExtent(TextureRHI->GetSizeX(), TextureRHI->GetSizeY());
-
-	struct FResolvedGlassDraw
+	// Blit into the same UTextureRenderTarget the DMI samples as SceneColorTexture.
+	// Mesh pass must list this RDG texture as a read dependency so the copy runs first.
+	FRDGTextureRef SceneCopyForMaterialRDG = nullptr;
+	if (Payload->SceneColorCopyResource && SceneColorSample)
 	{
-		FMatrix44f LocalToWorld;
-		FMatrix44f LocalToWorldInverseTranspose;
-		FBufferRHIRef StaticPositionBuffer;
-		FShaderResourceViewRHIRef PositionSRV;
-		FShaderResourceViewRHIRef TangentSRV; // model normals (static / SkinCache / bind-pose)
-		FShaderResourceViewRHIRef UVSRV;
-		FBufferRHIRef IndexBuffer;
-		uint32 NumVertices = 0;
-		uint32 FirstIndex = 0;
-		uint32 NumIndices = 0;
-		uint32 NumTexCoords = 1;
-		uint32 TangentFormat = 0;
-		uint32 bHasTangents = 0;
-		uint32 bHasUVs = 0;
-		bool bUseSkinCacheSRV = false;
-	};
-
-	TMap<const FSkeletalMeshObject*, FCachedGeometry> CachedGeomByMesh;
-	TArray<FResolvedGlassDraw> Resolved;
-	Resolved.Reserve(Payload->Draws.Num());
-	int32 NumSkinCacheHits = 0;
-	int32 NumFallbacks = 0;
-
-	for (const FGlassBackfaceDrawItem& Item : Payload->Draws)
-	{
-		if (!Item.IndexBuffer || Item.NumIndices < 3 || Item.NumVertices == 0)
+		if (FRHITexture* CopyRHI = Payload->SceneColorCopyResource->GetRenderTargetTexture())
 		{
-			continue;
-		}
-
-		FResolvedGlassDraw R;
-		R.LocalToWorld = Item.LocalToWorld;
-		R.LocalToWorldInverseTranspose = Item.LocalToWorld.Inverse().GetTransposed();
-		R.IndexBuffer = Item.IndexBuffer;
-		R.NumVertices = Item.NumVertices;
-		R.FirstIndex = Item.FirstIndex;
-		R.NumIndices = Item.NumIndices;
-		R.StaticPositionBuffer = Item.FallbackPositionBuffer;
-		R.UVSRV = Item.UVSRV;
-		R.NumTexCoords = FMath::Max(1u, Item.NumTexCoords);
-		R.bHasUVs = Item.UVSRV.IsValid() ? 1u : 0u;
-		R.TangentSRV = Item.TangentSRV;
-		R.TangentFormat = Item.TangentFormat;
-		R.bHasTangents = Item.TangentSRV.IsValid() ? 1u : 0u;
-		R.bUseSkinCacheSRV = false;
-
-		if (Item.Source == EGlassBackfaceSource::SkeletalSkinCache
-			&& Item.MeshObject
-			&& Item.SkinSectionIndex != INDEX_NONE)
-		{
-			const FCachedGeometry* Geom = CachedGeomByMesh.Find(Item.MeshObject);
-			if (!Geom)
+			SceneCopyForMaterialRDG = GraphBuilder.RegisterExternalTexture(
+				CreateRenderTarget(CopyRHI, TEXT("GlassSceneColorCopyRT")));
+			if (SceneCopyForMaterialRDG)
 			{
-				FCachedGeometry NewGeom;
-				if (Item.MeshObject->GetCachedGeometry(GraphBuilder, NewGeom))
+				const FIntPoint SrcExt = SceneColorSample->Desc.Extent;
+				const FIntPoint DstExt = SceneCopyForMaterialRDG->Desc.Extent;
+				// Prefer full same-size copy; else top-left subrect (capped MaxRTSize).
+				if (SrcExt == DstExt)
 				{
-					Geom = &CachedGeomByMesh.Add(Item.MeshObject, MoveTemp(NewGeom));
+					AddCopyTexturePass(GraphBuilder, SceneColorSample, SceneCopyForMaterialRDG);
 				}
-			}
-
-			if (Geom && Geom->Sections.IsValidIndex(Item.SkinSectionIndex))
-			{
-				const FCachedGeometry::Section& Sec = Geom->Sections[Item.SkinSectionIndex];
-				if (Sec.PositionBuffer && Sec.NumVertices > 0)
+				else
 				{
-					R.PositionSRV = Sec.PositionBuffer;
-					R.TangentSRV = Sec.TangentBuffer;
-					R.bHasTangents = Sec.TangentBuffer ? 1u : 0u;
-					R.TangentFormat = static_cast<uint32>(Sec.TangentFormat);
-					if (Sec.UVsBuffer)
+					const FIntPoint CopySize(FMath::Min(SrcExt.X, DstExt.X), FMath::Min(SrcExt.Y, DstExt.Y));
+					if (CopySize.X > 0 && CopySize.Y > 0)
 					{
-						R.UVSRV = Sec.UVsBuffer;
-						R.NumTexCoords = FMath::Max(1u, Sec.UVsChannelCount);
-						R.bHasUVs = 1u;
+						AddCopyTexturePass(
+							GraphBuilder, SceneColorSample, SceneCopyForMaterialRDG,
+							FIntPoint::ZeroValue, FIntPoint::ZeroValue, CopySize);
 					}
-					const uint32 TotalVerts = Sec.TotalVertexCount > 0
-						? Sec.TotalVertexCount
-						: (Sec.VertexBaseIndex + Sec.NumVertices);
-					R.NumVertices = FMath::Max(TotalVerts, Sec.VertexBaseIndex + Sec.NumVertices);
-					R.FirstIndex = Sec.IndexBaseIndex;
-					R.NumIndices = Sec.NumPrimitives * 3;
-					R.bUseSkinCacheSRV = true;
-					++NumSkinCacheHits;
 				}
 			}
 		}
+	}
+	if (!SceneCopyForMaterialRDG)
+	{
+		// Keep a valid RDG texture for pass params even if external RT missing.
+		SceneCopyForMaterialRDG = SceneColorSample;
+	}
 
-		if (!R.bUseSkinCacheSRV)
+	const FScene* Scene = View.Family && View.Family->Scene
+		? View.Family->Scene->GetRenderScene()
+		: nullptr;
+
+	// Build proxy set for dynamic mesh filter
+	TSet<const FPrimitiveSceneProxy*> ProxySet;
+	ProxySet.Reserve(Payload->Proxies.Num());
+	for (const FGlassMaterialProxyItem& Item : Payload->Proxies)
+	{
+		if (Item.Proxy)
 		{
-			if (!R.StaticPositionBuffer)
-			{
-				continue;
-			}
-			if (Item.Source != EGlassBackfaceSource::StaticMesh)
-			{
-				R.NumVertices = FMath::Max(R.NumVertices, static_cast<uint32>(Item.BaseVertexIndex) + Item.NumVertices);
-				++NumFallbacks;
-			}
+			ProxySet.Add(Item.Proxy);
 		}
-
-		Resolved.Add(MoveTemp(R));
 	}
 
-	if (Resolved.Num() == 0)
+	const FMaterialRenderProxy* OverrideProxy = Payload->BackfaceMaterialProxy;
+	const FIntPoint TextureExtent(TextureRHI->GetSizeXY());
+	const FIntRect PassViewport(0, 0, TextureExtent.X, TextureExtent.Y);
+
+	// Prefer FViewInfo for DynamicMeshElements + SimpleMeshPass requirements
+	if (!View.bIsViewInfo)
 	{
-		static double LastResolveEmpty = 0.0;
-		const double Now = FPlatformTime::Seconds();
-		if (Now - LastResolveEmpty > 2.0)
-		{
-			LastResolveEmpty = Now;
-			UE_LOG(LogGlassDualPass, Warning,
-				TEXT("[%s] %d payload draws → 0 resolved (SkinCache/buffers)"), PassTag, Payload->Draws.Num());
-		}
+		UE_LOG(LogGlassDualPass, Warning, TEXT("[%s] View is not FViewInfo — skip material mesh pass"), PassTag);
+		return;
+	}
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+
+	if (!Scene)
+	{
+		UE_LOG(LogGlassDualPass, Warning, TEXT("[%s] No FScene — skip material mesh pass"), PassTag);
 		return;
 	}
 
-	FRHITexture* BlackTex = GBlackTexture ? GBlackTexture->TextureRHI.GetReference() : nullptr;
-	FRHITexture* BlackCube = GBlackTextureCube ? GBlackTextureCube->TextureRHI.GetReference() : BlackTex;
-	// DataA/B: shader currently uses mid-range constants (bake sample disabled). Still bind fallbacks.
-	FRHITexture* DataARHI = Payload->DataA.IsValid() ? Payload->DataA.GetReference() : BlackTex;
-	FRHITexture* DataBRHI = Payload->DataB.IsValid() ? Payload->DataB.GetReference() : BlackTex;
-	FRHITexture* EnvRHI = Payload->EnvMap.IsValid() ? Payload->EnvMap.GetReference() : BlackCube;
-	FRHITexture* ColorsRHI = Payload->ColorsMap.IsValid() ? Payload->ColorsMap.GetReference() : BlackTex;
-	if (!EnvRHI || !ColorsRHI)
-	{
-		UE_LOG(LogGlassDualPass, Warning, TEXT("[%s] Missing env/colors RHI; skip"), PassTag);
-		return;
-	}
-	if (!DataARHI)
-	{
-		DataARHI = BlackTex;
-	}
-	if (!DataBRHI)
-	{
-		DataBRHI = BlackTex;
-	}
-
-	const FVector3f CameraWorld(View.ViewMatrices.GetViewOrigin());
-	const float Ior = CVarGlassIor.GetValueOnRenderThread();
-	const float UseTrans = CVarGlassUseTransmittance.GetValueOnRenderThread();
-	const float EnvRefr = CVarGlassEnvRefraction.GetValueOnRenderThread();
-	const float FringeCurve = CVarGlassFringeCurve.GetValueOnRenderThread();
-	const float FringeMix = CVarGlassFringeMix.GetValueOnRenderThread();
-	const float IridW = CVarGlassRefractionIridescence.GetValueOnRenderThread();
-	const float DistScale = CVarGlassDistScale.GetValueOnRenderThread();
-
-	// SceneColor buffer mapping — same as UE ViewportUVToBufferUV.
-	const FIntRect SceneViewRect = UE::FXRenderingUtils::GetRawViewRectUnsafe(View);
-	const FIntPoint SceneBufferExtent = SceneColorSample->Desc.Extent;
-	const FVector2f SceneViewRectMinF(
-		static_cast<float>(SceneViewRect.Min.X),
-		static_cast<float>(SceneViewRect.Min.Y));
-	const FVector2f SceneViewSizeF(
-		static_cast<float>(FMath::Max(SceneViewRect.Width(), 1)),
-		static_cast<float>(FMath::Max(SceneViewRect.Height(), 1)));
-	const FVector2f SceneBufferInvSizeF(
-		1.0f / static_cast<float>(FMath::Max(SceneBufferExtent.X, 1)),
-		1.0f / static_cast<float>(FMath::Max(SceneBufferExtent.Y, 1)));
-	// Soft edge ~2% of viewport (no hard UV saturate banding).
-	const float SceneEdgeSoftness = 0.02f;
-
-	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
-	TShaderMapRef<FGlassBackfaceVS> VertexShader(ShaderMap);
-	TShaderMapRef<FGlassBackfaceSkinCacheVS> SkinCacheVS(ShaderMap);
-	TShaderMapRef<FGlassBackfacePS> PixelShader(ShaderMap);
-
-	if (!VertexShader.IsValid() || !SkinCacheVS.IsValid() || !PixelShader.IsValid())
-	{
-		UE_LOG(LogGlassDualPass, Error, TEXT("[%s] Global shaders not valid (compile failed?)"), PassTag);
-		return;
-	}
-
-	FGlassBackfacePassParameters* PassParameters = GraphBuilder.AllocParameters<FGlassBackfacePassParameters>();
+	FGlassMatBackfacePassParameters* PassParameters = GraphBuilder.AllocParameters<FGlassMatBackfacePassParameters>();
 	PassParameters->SceneColorTexture = SceneColorSample;
+	// Forces RDG to complete SceneColor→SceneCopy blit before mesh material samples the UTexture RT.
+	PassParameters->SceneColorCopyForMaterial = SceneCopyForMaterialRDG;
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(GlassBackRDG, ERenderTargetLoadAction::ELoad);
 
-	FRHIShaderResourceView* NullSRV = GNullVertexBuffer.VertexBufferSRV.GetReference();
-	const int32 DrawCount = Resolved.Num();
+	// --- Required static uniform buffers (must all be valid) ---
+	// View / ResolvedView (slot View)
+	PassParameters->View.View = ViewInfo.ViewUniformBuffer;
+	PassParameters->View.InstancedView = ViewInfo.GetInstancedViewUniformBuffer();
+	// Scene UB (slot Scene) — from the active scene renderer
+	PassParameters->InstanceCullingDrawParams.Scene = ViewInfo.GetSceneUniforms().GetBuffer(GraphBuilder);
+	// InstanceCulling UB (slot InstanceCulling) — dummy is enough when not using GPU instance cull
+	PassParameters->InstanceCullingDrawParams.InstanceCulling =
+		FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(GraphBuilder);
 
-	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("GlassDualPass_%s(%d)", PassTag, DrawCount),
-		PassParameters,
-		ERDGPassFlags::Raster,
-		[Resolved = MoveTemp(Resolved), ViewProjection44, TextureExtent, VertexShader, SkinCacheVS, PixelShader,
-			SceneColorSample, DataARHI, DataBRHI, EnvRHI, ColorsRHI, CameraWorld, Ior, UseTrans, EnvRefr,
-			FringeCurve, FringeMix, IridW, DistScale, NullSRV, PassTag,
-			SceneViewRectMinF, SceneViewSizeF, SceneBufferInvSizeF, SceneEdgeSoftness](FRHICommandList& RHICmdList)
+	if (!PassParameters->View.View
+		|| !PassParameters->InstanceCullingDrawParams.Scene
+		|| !PassParameters->InstanceCullingDrawParams.InstanceCulling)
+	{
+		UE_LOG(LogGlassDualPass, Error,
+			TEXT("[%s] Missing static UB (View/Scene/InstanceCulling) — skip material mesh pass"), PassTag);
+		return;
+	}
+
+	FMeshPassProcessorRenderState DrawRenderState;
+	DrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
+	DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
+
+	const int32 ProxyCount = Payload->Proxies.Num();
+	const ERHIFeatureLevel::Type FeatureLevel = View.GetFeatureLevel();
+
+	TArray<FPrimitiveSceneProxy*> ProxiesCopy;
+	ProxiesCopy.Reserve(Payload->Proxies.Num());
+	for (const FGlassMaterialProxyItem& Item : Payload->Proxies)
+	{
+		if (Item.Proxy)
 		{
-			// RT is a scaled capture of the same NDC as ViewProjection; full RT = full view.
-			RHICmdList.SetViewport(
-				0.0f, 0.0f, 0.0f,
-				static_cast<float>(TextureExtent.X), static_cast<float>(TextureExtent.Y), 1.0f);
+			ProxiesCopy.Add(Item.Proxy);
+		}
+	}
 
-			FRHITexture* SceneColorRHI = SceneColorSample->GetRHI();
-			if (!SceneColorRHI)
-			{
-				return;
-			}
+	// AddDrawDynamicMeshPass: does NOT wipe our UBs (unlike AddSimpleMeshPass + null manager).
+	AddDrawDynamicMeshPass(
+		GraphBuilder,
+		RDG_EVENT_NAME("GlassDualPass_MaterialBackface(%d)", ProxyCount),
+		PassParameters,
+		View,
+		PassViewport,
+		[
+			Scene,
+			FeatureLevel,
+			DrawRenderState,
+			OverrideProxy,
+			ProxiesCopy = MoveTemp(ProxiesCopy),
+			&ViewInfo,
+			ProxySet = MoveTemp(ProxySet),
+			PassTag
+		](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+		{
+			FGlassMatBackfaceMeshProcessor Processor(
+				Scene,
+				FeatureLevel,
+				&ViewInfo,
+				DrawRenderState,
+				DynamicMeshPassContext,
+				OverrideProxy);
 
-			auto FillPS = [&](FGlassBackfacePS::FParameters& PSParams)
-			{
-				PSParams.ViewProjection = ViewProjection44;
-				PSParams.CameraWorldPos = CameraWorld;
-				PSParams.SceneViewRectMin = SceneViewRectMinF;
-				PSParams.SceneViewSize = SceneViewSizeF;
-				PSParams.SceneBufferInvSize = SceneBufferInvSizeF;
-				PSParams.SceneEdgeSoftness = SceneEdgeSoftness;
-				PSParams.IorStart = Ior;
-				PSParams.UseTransmittance = UseTrans;
-				PSParams.EnvRefraction = EnvRefr;
-				PSParams.FringeCurve = FringeCurve;
-				PSParams.FringeMix = FringeMix;
-				PSParams.FringeColor = GGlassFringeColor;
-				PSParams.RefractionIridescence = IridW;
-				PSParams.DistScale = DistScale;
-				PSParams.DataATexture = DataARHI;
-				PSParams.DataBTexture = DataBRHI;
-				PSParams.EnvMapTexture = EnvRHI;
-				PSParams.ColorsMapTexture = ColorsRHI;
-				PSParams.SceneColorTexture = SceneColorRHI;
-				PSParams.DataSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				PSParams.EnvSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				PSParams.ColorsSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				// Border-safe: out-of-range UV handled by EdgeMask (not hard clamp into edge texels).
-				PSParams.SceneSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			};
+			const uint64 DefaultMask = ~0ull;
+			int32 Added = 0;
 
-			int32 Drawn = 0;
-			for (const FResolvedGlassDraw& Item : Resolved)
+			// 1) Static mesh batches from primitive scene info
+			for (FPrimitiveSceneProxy* Proxy : ProxiesCopy)
 			{
-				if (!Item.IndexBuffer || Item.NumIndices < 3)
+				if (!Proxy)
 				{
 					continue;
 				}
-
-				if (Item.bUseSkinCacheSRV && Item.PositionSRV)
+				FPrimitiveSceneInfo* Info = Proxy->GetPrimitiveSceneInfo();
+				if (!Info)
 				{
-					FGraphicsPipelineStateInitializer GraphicsPSOInit;
-					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
-					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = SkinCacheVS.GetVertexShader();
-					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI();
-					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-					GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-
-					FGlassBackfaceSkinCacheVS::FParameters VSParams;
-					VSParams.LocalToWorld = Item.LocalToWorld;
-					VSParams.LocalToWorldInverseTranspose = Item.LocalToWorldInverseTranspose;
-					VSParams.ViewProjection = ViewProjection44;
-					VSParams.PositionSRV = Item.PositionSRV;
-					VSParams.TangentSRV = Item.TangentSRV.IsValid() ? Item.TangentSRV.GetReference() : NullSRV;
-					VSParams.UVSRV = Item.UVSRV.IsValid() ? Item.UVSRV.GetReference() : NullSRV;
-					VSParams.NumTexCoords = Item.NumTexCoords;
-					VSParams.TangentFormat = Item.TangentFormat;
-					VSParams.bHasTangents = Item.bHasTangents && Item.TangentSRV.IsValid() ? 1u : 0u;
-					VSParams.bHasUVs = Item.bHasUVs && Item.UVSRV.IsValid() ? 1u : 0u;
-					if (!VSParams.TangentSRV || !VSParams.UVSRV)
-					{
-						continue;
-					}
-					SetShaderParameters(RHICmdList, SkinCacheVS, SkinCacheVS.GetVertexShader(), VSParams);
-
-					FGlassBackfacePS::FParameters PSParams;
-					FillPS(PSParams);
-					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParams);
-
-					RHICmdList.DrawIndexedPrimitive(
-						Item.IndexBuffer, 0, 0, Item.NumVertices, Item.FirstIndex, Item.NumIndices / 3, 1);
-					++Drawn;
+					continue;
 				}
-				else if (Item.StaticPositionBuffer)
+				for (int32 MeshId = 0; MeshId < Info->StaticMeshes.Num(); ++MeshId)
 				{
-					FGraphicsPipelineStateInitializer GraphicsPSOInit;
-					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetGlassBackfaceVertexDeclarationRHI();
-					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI();
-					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-					GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-
-					FGlassBackfaceVS::FParameters VSParams;
-					VSParams.LocalToWorld = Item.LocalToWorld;
-					VSParams.LocalToWorldInverseTranspose = Item.LocalToWorldInverseTranspose;
-					VSParams.ViewProjection = ViewProjection44;
-					VSParams.TangentSRV = Item.TangentSRV.IsValid() ? Item.TangentSRV.GetReference() : NullSRV;
-					VSParams.UVSRV = Item.UVSRV.IsValid() ? Item.UVSRV.GetReference() : NullSRV;
-					VSParams.NumTexCoords = Item.NumTexCoords;
-					VSParams.TangentFormat = Item.TangentFormat;
-					VSParams.bHasTangents = Item.bHasTangents && Item.TangentSRV.IsValid() ? 1u : 0u;
-					VSParams.bHasUVs = Item.bHasUVs && Item.UVSRV.IsValid() ? 1u : 0u;
-					if (!VSParams.UVSRV || !VSParams.TangentSRV)
+					const FStaticMeshBatch& StaticBatch = Info->StaticMeshes[MeshId];
+					const FMeshBatch& MeshBatch = StaticBatch;
+					if (MeshBatch.bUseForMaterial && MeshBatch.VertexFactory)
 					{
-						continue;
+						Processor.AddMeshBatch(MeshBatch, DefaultMask, Proxy, MeshId);
+						++Added;
 					}
-					SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParams);
-
-					FGlassBackfacePS::FParameters PSParams;
-					FillPS(PSParams);
-					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParams);
-
-					RHICmdList.SetStreamSource(0, Item.StaticPositionBuffer, 0);
-					RHICmdList.DrawIndexedPrimitive(
-						Item.IndexBuffer, 0, 0, Item.NumVertices, Item.FirstIndex, Item.NumIndices / 3, 1);
-					++Drawn;
 				}
+			}
+
+			// 2) Dynamic elements (skeletal / movable) already gathered for this view
+			for (int32 MeshIndex = 0; MeshIndex < ViewInfo.DynamicMeshElements.Num(); ++MeshIndex)
+			{
+				const FMeshBatchAndRelevance& MeshAndRel = ViewInfo.DynamicMeshElements[MeshIndex];
+				if (!MeshAndRel.Mesh || !MeshAndRel.PrimitiveSceneProxy)
+				{
+					continue;
+				}
+				if (!ProxySet.Contains(MeshAndRel.PrimitiveSceneProxy))
+				{
+					continue;
+				}
+				Processor.AddMeshBatch(*MeshAndRel.Mesh, DefaultMask, MeshAndRel.PrimitiveSceneProxy);
+				++Added;
 			}
 
 			static double LastDrawLog = 0.0;
@@ -910,10 +678,12 @@ void FGlassDualPassViewExtension::ExecuteGlassBackfacePass(
 			{
 				LastDrawLog = Now;
 				UE_LOG(LogGlassDualPass, Log,
-					TEXT("[%s] Drew %d/%d backfaces → RT %dx%d"),
-					PassTag, Drawn, Resolved.Num(), TextureExtent.X, TextureExtent.Y);
+					TEXT("[%s] Material mesh pass setup: %d batch add(s), %d proxies"),
+					PassTag, Added, ProxiesCopy.Num());
 			}
-		});
+		},
+		/*bForceStereoInstancingOff=*/true,
+		/*bForceParallelSetupOff=*/true);
 }
 
 void FGlassDualPassViewExtension::PrePostProcessPass_RenderThread(
@@ -926,12 +696,11 @@ void FGlassDualPassViewExtension::PrePostProcessPass_RenderThread(
 		return;
 	}
 
-	// Only path: after deferred lighting — SceneColor is lit.
 	FRDGTextureRef SceneColor = nullptr;
 	if (Inputs.SceneTextures)
 	{
 		SceneColor = (*Inputs.SceneTextures)->SceneColorTexture;
 	}
 
-	ExecuteGlassBackfacePass(GraphBuilder, View, SceneColor, /*bCopySceneColor=*/true, TEXT("PrePostProcess"));
+	ExecuteGlassBackfaceMaterialPass(GraphBuilder, View, SceneColor, TEXT("PrePostProcess"));
 }

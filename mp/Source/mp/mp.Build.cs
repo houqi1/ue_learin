@@ -23,7 +23,8 @@ public class mp : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
-		// FPostProcessingInputs / lit SceneColor access for glass dual-pass PrePostProcess.
+		// FPostProcessingInputs, FViewInfo, ScenePrivate for material mesh backface pass.
 		PrivateIncludePaths.Add(Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal"));
+		PrivateIncludePaths.Add(Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Private"));
 	}
 }

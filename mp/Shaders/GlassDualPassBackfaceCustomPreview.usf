@@ -1,0 +1,15 @@
+// =============================================================================
+// GlassDualPassBackfaceCustomPreview.usf
+// Material Custom entry that COMPILES without any Custom input pins.
+//
+// Production path (after wiring inputs in M_PhoneixGlass_Back Custom node):
+//   replace include with:  #include "/Project/GlassDualPassBackfaceCustom.usf"
+//   (see that file header for required pin names)
+//
+// Shared shading implementation:
+//   /Project/GlassDualPassBackfaceLib.ush
+// =============================================================================
+
+// Preview emissive so the material is visibly "alive" in the editor.
+float3 PreviewColor = float3(0.15f, 0.55f, 0.95f);
+return PreviewColor;

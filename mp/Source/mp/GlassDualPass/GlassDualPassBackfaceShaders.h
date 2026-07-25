@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Global shaders: glass backface (static + SkinCache) with bake-map shading.
+// Global shaders: glass backface geometry (static + SkinCache).
+// Pixel math: GlassDualPassBackfaceLib.ush (same body as Material Custom).
 
 #pragma once
 

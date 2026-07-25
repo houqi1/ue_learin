@@ -1,0 +1,77 @@
+// =============================================================================
+// GlassDualPassBackfaceCustom.usf — Material Custom entry (backface dual-pass)
+//
+// Same pattern as PhoneixGlass.usf:
+//   Material M_PhoneixGlass_Back → Custom node → #include this file
+//
+// Custom output: CMOT_Float3 (plug into Emissive on Unlit material)
+//
+// Expected Custom inputs (names must match material graph):
+//   WorldPos              float3   Absolute World Position
+//   WorldNormal           float3   Vertex Normal WS (or Pixel Normal WS)
+//   UV1                   float2   TexCoord1 (bake atlas; currently unused values)
+//   CameraWorldPos        float3   Camera Position WS
+//   ViewProjection0..3    float4   rows of world→clip (or use View_*, see material)
+//   SceneViewRectMin      float2
+//   SceneViewSize         float2
+//   SceneBufferInvSize    float2
+//   SceneEdgeSoftness     float
+//   IorStart              float
+//   UseTransmittance      float
+//   EnvRefraction         float
+//   FringeCurve           float
+//   FringeMix             float
+//   FringeColor           float3
+//   RefractionIridescence float
+//   DistScale             float
+//   DataATexture          Texture2D
+//   DataBTexture          Texture2D
+//   EnvMapTexture         TextureCube
+//   ColorsMapTexture      Texture2D
+//   SceneColorTexture     Texture2D
+//
+// Note: Texture inputs auto-provide *Sampler in Custom (UE convention).
+// ViewProjection is rebuilt from four float4 rows for Custom pin compatibility.
+// =============================================================================
+
+#include "/Project/GlassDualPassBackfaceLib.ush"
+
+FGlassBackfaceShading GBF;
+
+// Rebuild float4x4 from row vectors (Custom cannot take float4x4 pins reliably).
+// ViewProjection rows + float2 view metrics may arrive as float3/4 from VectorParameter pins.
+float4x4 VP = float4x4(
+	ViewProjection0,
+	ViewProjection1,
+	ViewProjection2,
+	ViewProjection3);
+
+float3 Color = GBF.Shade(
+	WorldPos,
+	WorldNormal,
+	UV1.xy,
+	CameraWorldPos,
+	VP,
+	SceneViewRectMin.xy,
+	SceneViewSize.xy,
+	SceneBufferInvSize.xy,
+	SceneEdgeSoftness,
+	IorStart,
+	UseTransmittance,
+	EnvRefraction,
+	FringeCurve,
+	FringeMix,
+	FringeColor.rgb,
+	RefractionIridescence,
+	DistScale,
+	DataATexture,
+	DataBTexture,
+	DataATextureSampler,
+	EnvMapTexture,
+	EnvMapTextureSampler,
+	ColorsMapTexture,
+	ColorsMapTextureSampler,
+	SceneColorTexture,
+	SceneColorTextureSampler);
+
+return Color;
