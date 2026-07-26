@@ -455,3 +455,65 @@ static FAutoConsoleCommand CCmdReloadBackfaceMaterial(
 				*GetNameSafe(Sys->GetBackfaceMaterialMID()));
 		}
 	}));
+
+/** Force GPU shadermap rebuild for front/back glass masters (MCP recompile alone is not enough). */
+static void ForceRecompileGlassMaterial(const TCHAR* Path)
+{
+	UMaterialInterface* MI = LoadObject<UMaterialInterface>(nullptr, Path);
+	if (!IsValid(MI))
+	{
+		UE_LOG(LogGlassDualPass, Error, TEXT("ForceRecompileMaterials: load failed %s"), Path);
+		return;
+	}
+
+	// Walk to UMaterial master (MIC/MID → parent).
+	UMaterial* Master = MI->GetMaterial();
+	if (!IsValid(Master))
+	{
+		UE_LOG(LogGlassDualPass, Error, TEXT("ForceRecompileMaterials: no UMaterial for %s"), Path);
+		return;
+	}
+
+	// Invalidate cached expressions + force all dependent shader maps to rebuild.
+	Master->UpdateCachedExpressionData();
+	Master->ForceRecompileForRendering();
+	MI->ForceRecompileForRendering();
+
+	UE_LOG(LogGlassDualPass, Warning,
+		TEXT("ForceRecompileMaterials: requested recompile for %s (master=%s). Watch shader compile progress; then verify Saved/ShaderDebugInfo dump."),
+		Path, *Master->GetPathName());
+}
+
+static FAutoConsoleCommand CCmdForceRecompileGlassMaterials(
+	TEXT("r.GlassDualPass.ForceRecompileMaterials"),
+	TEXT("Force recompile M_PhoneixGlass + M_PhoneixGlass_Back shadermaps (use after usf/Custom edits).\n")
+	TEXT("Then: Tools/VerifyMaterialShaderDump.ps1  OR  inspect Saved/ShaderDebugInfo.\n")
+	TEXT("Also reloads backface DMI."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		// Dump all compiles so VerifyMaterialShaderDump.ps1 can pass.
+		if (IConsoleVariable* Dump = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DumpShaderDebugInfo")))
+		{
+			Dump->Set(1, ECVF_SetByCode);
+		}
+		if (IConsoleVariable* Dev = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ShaderDevelopmentMode")))
+		{
+			Dev->Set(1, ECVF_SetByCode);
+		}
+
+		ForceRecompileGlassMaterial(TEXT("/Game/Phonix/Material/M_PhoneixGlass.M_PhoneixGlass"));
+		ForceRecompileGlassMaterial(TEXT("/Game/Phonix/Material/M_PhoneixGlass_Back.M_PhoneixGlass_Back"));
+		ForceRecompileGlassMaterial(TEXT("/Game/Phonix/Material/M_PhoneixGlass_Back_Inst.M_PhoneixGlass_Back_Inst"));
+
+		if (GEngine)
+		{
+			if (UGlassDualPassSubsystem* Sys = GEngine->GetEngineSubsystem<UGlassDualPassSubsystem>())
+			{
+				Sys->ResetBackfaceMaterialLoadAttempt();
+				Sys->EnsureBackfaceMaterial();
+			}
+		}
+
+		UE_LOG(LogGlassDualPass, Warning,
+			TEXT("ForceRecompileMaterials: done request. Console: r.DumpShaderDebugInfo should be 1. Verify with Tools/VerifyMaterialShaderDump.ps1"));
+	}));

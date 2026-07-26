@@ -4,8 +4,8 @@
 // Vertex Color (COLOR0):
 //   R = _CONVEXITY   (0..1, clamped)
 //   G = _CONCAVITY   (0..1, clamped)
-//   B = normalize(_THICKNESS)   // body / other (not refraction step)
-//   A = normalize(_DIST)        // refraction step base: P + R * Dist * DistScale (back)
+//   B = normalize(_THICKNESS)   // front sample step: P + R * Thickness
+//   A = normalize(_DIST)        // back sample step base: P + R * Dist * DistScale
 //
 // UV1 (UVMap_Data):
 //   U = normalize(_PEAKS)

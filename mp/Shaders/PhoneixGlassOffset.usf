@@ -1,14 +1,11 @@
 // =============================================================================
-// PhoneixGlassOffset.usf — sample UV from P + R * _DIST (mesh bake Col.A)
+// PhoneixGlassOffset.usf — front sample UV
 //
-// Custom: CMOT_Float2 → absolute Viewport UV of refracted sample point
+//   P' = P + R * _THICKNESS * RefractStrength
 //
-// Inputs:
-//   WorldPos, Normal, CameraVector, IOR
-//   VertexColor   float3  COLOR0 RGB
-//   VertexColorA  float   COLOR0 A = normalize(_DIST)  ← refraction step
-//
-// Front + back both use _DIST for P + R * Dist (not _THICKNESS).
+// Prefer this body INLINE in M_PhoneixGlass Custom_0 Code (not include-only),
+// so CustomExpression0 keeps RefractStrength in the compiled signature.
+// Keep this file as the source of truth / mirror.
 // =============================================================================
 
 #include "/Project/GlassDualPassBakeAttrs.ush"
@@ -29,8 +26,9 @@ if (dot(R, R) < 1e-8f)
 }
 R = normalize(R);
 
-// P' = P + R * _DIST
-float3 SampleWorldPos = WorldPos + R * DistAttr;
+// P' = P + R * _THICKNESS * RefractStrength
+float StepLen = Thickness * max(RefractStrength, 0.0f);
+float3 SampleWorldPos = WorldPos + R * StepLen;
 
 float3 TranslatedSamplePos = SampleWorldPos + LWCToFloat(ResolvedView.PreViewTranslation);
 float4 Clip = mul(float4(TranslatedSamplePos, 1.0f), ResolvedView.TranslatedWorldToClip);
@@ -39,7 +37,7 @@ float2 Ndc = Clip.xy * InvW;
 float2 SampleUV = float2(0.5f + 0.5f * Ndc.x, 0.5f - 0.5f * Ndc.y);
 SampleUV = saturate(SampleUV);
 
-// Keep other bake channels referenced
-SampleUV += 0.0f * float2(Convexity + Concavity + Thickness + Peaks, 0.0f);
+// Keep channels + RefractStrength live for DCE / signature
+SampleUV += float2(0.0f * (Convexity + Concavity + DistAttr + Peaks + RefractStrength), 0.0f);
 
 return SampleUV;
