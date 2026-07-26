@@ -12,6 +12,8 @@
 #ifndef GLASS_DUAL_PASS_BACKFACE_LIB_USH
 #define GLASS_DUAL_PASS_BACKFACE_LIB_USH
 
+#include "/Project/GlassDualPassBakeAttrs.ush"
+
 struct FGlassBackfaceShading
 {
 	// UE Common.ush: ScreenPosToViewportUV
@@ -79,13 +81,17 @@ struct FGlassBackfaceShading
 
 	/**
 	 * Full backface color. Fixed order:
-	 * N+V → refract → P+R*vDist UV → SceneColor → Env → fringe → T → curvature → iridescence.
-	 * Bake DataA/B currently mid-range constants (BakeGate keeps samples live).
+	 * N+V → refract → P+R*_DIST*DistScale UV → SceneColor → Env → fringe → T → curvature → iridescence.
+	 *
+	 * Bake from mesh: VertexColor (Conv/Conc/Thickness/Dist) + UV1.u (Peaks).
+	 * Refraction step: P + R * _DIST * DistScale  (artist strength = DistScale).
 	 */
 	float3 Shade(
 		float3 WorldPos,
 		float3 WorldNormal,
 		float2 UV1,
+		float3 VertexColorRGB,
+		float VertexColorA,
 		float3 CameraWorldPos,
 		float4x4 ViewProjection,
 		float2 SceneViewRectMin,
@@ -100,9 +106,9 @@ struct FGlassBackfaceShading
 		float3 FringeColor,
 		float RefractionIridescence,
 		float DistScale,
-		Texture2D DataATexture,
-		Texture2D DataBTexture,
-		SamplerState DataSampler,
+		float DebugOutputRefractR,
+		float DebugOutputRefractN,
+		float DebugOutputOffsetPos,
 		TextureCube EnvMapTexture,
 		SamplerState EnvSampler,
 		Texture2D ColorsMapTexture,
@@ -110,29 +116,22 @@ struct FGlassBackfaceShading
 		Texture2D SceneColorTexture,
 		SamplerState SceneSampler)
 	{
-		// Bake atlas temporarily replaced by mid-range constants.
-		// SampleLevel: safe for material Custom (incl. RT hit shaders); Sample() is not.
-		const float4 DataA = DataATexture.SampleLevel(DataSampler, UV1, 0);
-		const float4 DataB = DataBTexture.SampleLevel(DataSampler, UV1, 0);
-		const float BakeGate = 0.0f * (DataA.r + DataB.r);
-
-		const float Peaks = 0.330049f + BakeGate;
-		const float Dist = (0.170842f + BakeGate) * DistScale; // vDist
-		const float Convexity = 0.511098f + BakeGate;
-		const float Concavity = 0.481145f + BakeGate;
+		FGlassBakeAttrs Bake;
+		float Convexity, Concavity, Thickness, DistAttr, Peaks;
+		Bake.Decode(VertexColorRGB, VertexColorA, UV1, Convexity, Concavity, Thickness, DistAttr, Peaks);
 		const float VCurvature = Convexity - Concavity;
+		// Keep Thickness live (body / future); refraction step uses Dist * DistScale only.
+		const float ThicknessGate = 0.0f * Thickness;
 
 		// -------------------------------------------------------------------------
 		// Pipeline order (fixed):
 		//   N (flipped) + V
 		//   → refract(V, N, 1/iorStart)
-		//   → P + R * vDist → project UV
-		//   → sample SceneColor (Post / lit scene RT)
-		//   → optional + envRefraction * Env(R)
-		//   → mix edge fringe
-		//   → × transmittance (Fresnel, gated by UseTransmittance)
-		//   → × curvature (1 + vCurvature * |R·N|)
-		//   → × refraction iridescence (colorsMap row y=1, using R)
+		//   → [DebugOutputRefractR] visualize R then return
+		//   → P + R * _DIST * DistScale = OffsetPos
+		//   → [DebugOutputOffsetPos] visualize OffsetPos then return
+		//   → project UV → sample SceneColor
+		//   → [DebugOutputRefractN] visualize refracted SceneColor sample then return
 		// -------------------------------------------------------------------------
 
 		// 1) Normal (face toward camera) + view ray V (surface → away from camera along path)
@@ -142,6 +141,7 @@ struct FGlassBackfaceShading
 		{
 			Normal = -Normal;
 		}
+
 		const float3 ViewDirection = normalize(WorldPos - CameraWorldPos);
 		const float DotNormalView = dot(Normal, ViewDirection);
 
@@ -154,8 +154,27 @@ struct FGlassBackfaceShading
 		}
 		R = normalize(R);
 
-		// 3) P + R * vDist → project UV
-		const float3 OffsetPos = WorldPos + R * Dist;
+		// Debug switch: output R as RGB (direction in [-1,1] → [0,1])
+		if (DebugOutputRefractR > 0.5f)
+		{
+			return saturate(R * 0.5f + 0.5f);
+		}
+
+		// 3) P + R * _DIST * DistScale → project UV (DistScale = refraction strength)
+		const float StepDist = DistAttr * max(DistScale, 0.0f) + ThicknessGate;
+		const float3 OffsetPos = WorldPos + R * StepDist;
+
+		// Debug: OffsetPos (world). frac so large UE units remain visible as a field.
+		// R channel also packs |OffsetPos - WorldPos| (step length Dist) into a scalar band.
+		if (DebugOutputOffsetPos > 0.5f)
+		{
+			const float StepLen = length(OffsetPos - WorldPos);
+			float3 Vis = frac(abs(OffsetPos) * 0.02f);
+			// Encode step length into alpha-less RGB boost on B so Dist magnitude is readable
+			Vis.b = saturate(Vis.b * 0.5f + StepLen * 2.0f);
+			return saturate(Vis);
+		}
+
 		float2 SceneBufferUV;
 		float SceneEdgeMask;
 		ProjectWorldToSceneBufferUV(
@@ -168,6 +187,12 @@ struct FGlassBackfaceShading
 		if (SceneEdgeMask > 0.0f)
 		{
 			Texel = SceneColorTexture.SampleLevel(SceneSampler, SceneBufferUV, 0).rgb * SceneEdgeMask;
+		}
+
+		// Debug: raw refracted SceneColor sample (no env / fringe / T / iridescence)
+		if (DebugOutputRefractN > 0.5f)
+		{
+			return Texel;
 		}
 
 		// 5) Optional + envRefraction * Env(refract direction)

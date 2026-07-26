@@ -129,10 +129,13 @@ void MainPS(
 	out float4 OutColor : SV_Target0)
 {
 	FGlassBackfaceShading GBF;
+	// Global path: no vertex color interpolator — mid greys (legacy fallback only).
 	const float3 Color = GBF.Shade(
 		InWorldPos,
 		InWorldNormal,
 		InUV1,
+		float3(0.5f, 0.5f, 0.5f),
+		0.5f,
 		CameraWorldPos,
 		ViewProjection,
 		SceneViewRectMin,
@@ -147,9 +150,9 @@ void MainPS(
 		FringeColor,
 		RefractionIridescence,
 		DistScale,
-		DataATexture,
-		DataBTexture,
-		DataSampler,
+		0.0f, // DebugOutputRefractR — material path only
+		0.0f, // DebugOutputRefractN — material path only
+		0.0f, // DebugOutputOffsetPos — material path only
 		EnvMapTexture,
 		EnvSampler,
 		ColorsMapTexture,

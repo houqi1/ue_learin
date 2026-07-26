@@ -1,27 +1,21 @@
 // =============================================================================
-// PhoneixGlassOffset.usf — sample UV from P + R * vThickness (world space)
+// PhoneixGlassOffset.usf — sample UV from P + R * _DIST (mesh bake Col.A)
 //
-// Custom: CMOT_Float2  → absolute Viewport UV (0..1) of the refracted sample point
-//   #include "/Project/PhoneixGlassOffset.usf"
+// Custom: CMOT_Float2 → absolute Viewport UV of refracted sample point
 //
 // Inputs:
-//   WorldPos       float3   Absolute World Position
-//   Normal         float3   Pixel / vertex normal WS
-//   CameraVector   float3   CameraVectorWS (toward camera)
-//   IOR            float
+//   WorldPos, Normal, CameraVector, IOR
+//   VertexColor   float3  COLOR0 RGB
+//   VertexColorA  float   COLOR0 A = normalize(_DIST)  ← refraction step
 //
-// vThickness: CONSTANT for now (placeholder). Replace later (e.g. bake _DIST / atlas).
-//   Do NOT use material Thickness param here — that drives body tint / optical stack only.
-//
-// Graph:
-//   SampleUV = this Custom
-//   Back     = Sample(GlassBackRT, SampleUV)
-//   Scene    = SceneColor(Offset = SampleUV - ViewportUV)
-//   SceneIn  = lerp(Scene, Back.rgb, Back.a)
+// Front + back both use _DIST for P + R * Dist (not _THICKNESS).
 // =============================================================================
 
-// Placeholder constant — swap for bake/per-pixel later.
-static const float kGlassSampleVThickness = 0.170842f;
+#include "/Project/GlassDualPassBakeAttrs.ush"
+
+FGlassBakeAttrs Bake;
+float Convexity, Concavity, Thickness, DistAttr, Peaks;
+Bake.Decode(VertexColor.rgb, VertexColorA, float2(0.0f, 0.0f), Convexity, Concavity, Thickness, DistAttr, Peaks);
 
 float3 N = normalize(Normal);
 float3 V = normalize(CameraVector);
@@ -35,8 +29,8 @@ if (dot(R, R) < 1e-8f)
 }
 R = normalize(R);
 
-// P' = P + R * vThickness
-float3 SampleWorldPos = WorldPos + R * kGlassSampleVThickness;
+// P' = P + R * _DIST
+float3 SampleWorldPos = WorldPos + R * DistAttr;
 
 float3 TranslatedSamplePos = SampleWorldPos + LWCToFloat(ResolvedView.PreViewTranslation);
 float4 Clip = mul(float4(TranslatedSamplePos, 1.0f), ResolvedView.TranslatedWorldToClip);
@@ -44,5 +38,8 @@ float InvW = rcp(max(abs(Clip.w), 1e-5f));
 float2 Ndc = Clip.xy * InvW;
 float2 SampleUV = float2(0.5f + 0.5f * Ndc.x, 0.5f - 0.5f * Ndc.y);
 SampleUV = saturate(SampleUV);
+
+// Keep other bake channels referenced
+SampleUV += 0.0f * float2(Convexity + Concavity + Thickness + Peaks, 0.0f);
 
 return SampleUV;

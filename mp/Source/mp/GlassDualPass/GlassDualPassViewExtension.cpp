@@ -70,6 +70,24 @@ static TAutoConsoleVariable<float> CVarGlassFringeCurve(TEXT("r.GlassDualPass.Fr
 static TAutoConsoleVariable<float> CVarGlassFringeMix(TEXT("r.GlassDualPass.FringeMix"), 0.25f, TEXT("Fallback fringe mix if material missing."), ECVF_RenderThreadSafe);
 static TAutoConsoleVariable<float> CVarGlassRefractionIridescence(TEXT("r.GlassDualPass.RefractionIridescence"), 0.85f, TEXT("Fallback iridescence if material missing."), ECVF_RenderThreadSafe);
 static TAutoConsoleVariable<float> CVarGlassDistScale(TEXT("r.GlassDualPass.DistScale"), 1.f, TEXT("Fallback DistScale if material missing."), ECVF_RenderThreadSafe);
+
+// Force debug modes onto backface DMI (bypasses MI/CopyParameterOverrides issues).
+// -1 = use material/MI value; 0 = force off; 1 = force on.
+static TAutoConsoleVariable<float> CVarGlassDebugRefractR(
+	TEXT("r.GlassDualPass.DebugRefractR"),
+	-1.f,
+	TEXT("Force DebugOutputRefractR on backface DMI. -1=material, 0=off, 1=on (visualize R)."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarGlassDebugRefractN(
+	TEXT("r.GlassDualPass.DebugRefractScene"),
+	-1.f,
+	TEXT("Force DebugOutputRefractN (refracted SceneColor). -1=material, 0=off, 1=on."),
+	ECVF_Default);
+static TAutoConsoleVariable<float> CVarGlassDebugOffsetPos(
+	TEXT("r.GlassDualPass.DebugOffsetPos"),
+	-1.f,
+	TEXT("Force DebugOutputOffsetPos. -1=material, 0=off, 1=on."),
+	ECVF_Default);
 static TAutoConsoleVariable<float> CVarGlassFrontWeight(
 	TEXT("r.GlassDualPass.FrontWeight"),
 	0.65f,
@@ -334,15 +352,59 @@ void FGlassDualPassViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 	}
 	UTextureRenderTarget2D* SceneCopy = Sys->GetOrCreateSceneColorCopyRT(CopyW, CopyH);
 
-	// 1) Sync MIC → DMI first (artist knobs). MUST run before SceneColor inject —
-	//    CopyParameterOverrides would wipe SceneColorTexture if done after.
+	// 1) Sync parent MI → DMI first (artist knobs). MUST run before SceneColor inject —
+	//    CopyParameterOverrides only copies *overrides* and can wipe textures if done after inject.
+	//    Also push effective scalar values (incl. inherited defaults) so Debug/Ior knobs always reach DMI.
+	//    See: MI overrides vs parent defaults; Custom pins only work if present in compiled shader.
 	if (UMaterialInstanceDynamic* MID = Sys->GetBackfaceMaterialMID())
 	{
-		if (UMaterialInstance* ParentMI = Cast<UMaterialInstance>(Sys->GetBackfaceMaterial()))
+		if (UMaterialInterface* ParentMat = Sys->GetBackfaceMaterial())
 		{
-			if (!Cast<UMaterialInstanceDynamic>(ParentMI))
+			if (UMaterialInstance* ParentMI = Cast<UMaterialInstance>(ParentMat))
 			{
-				MID->CopyParameterOverrides(ParentMI);
+				if (!Cast<UMaterialInstanceDynamic>(ParentMI))
+				{
+					MID->CopyParameterOverrides(ParentMI);
+				}
+			}
+
+			// Explicit scalar sync: GetScalarParameterValue reads the *effective* value
+			// (MIC override or parent default). CopyParameterOverrides alone misses non-overrides.
+			auto SyncScalar = [MID, ParentMat](const TCHAR* Name)
+			{
+				float V = 0.f;
+				if (ParentMat->GetScalarParameterValue(FHashedMaterialParameterInfo(Name), V))
+				{
+					MID->SetScalarParameterValue(Name, V);
+				}
+			};
+			SyncScalar(TEXT("IorStart"));
+			SyncScalar(TEXT("UseTransmittance"));
+			SyncScalar(TEXT("EnvRefraction"));
+			SyncScalar(TEXT("FringeCurve"));
+			SyncScalar(TEXT("FringeMix"));
+			SyncScalar(TEXT("RefractionIridescence"));
+			SyncScalar(TEXT("DistScale"));
+			SyncScalar(TEXT("SceneEdgeSoftness"));
+			SyncScalar(TEXT("DebugOutputRefractR"));
+			SyncScalar(TEXT("DebugOutputRefractN"));
+			SyncScalar(TEXT("DebugOutputOffsetPos"));
+
+			// CVar force (-1 = leave material value). Reliable RT debug without MI editor quirks.
+			const float ForceR = CVarGlassDebugRefractR.GetValueOnGameThread();
+			const float ForceN = CVarGlassDebugRefractN.GetValueOnGameThread();
+			const float ForceO = CVarGlassDebugOffsetPos.GetValueOnGameThread();
+			if (ForceR >= 0.f)
+			{
+				MID->SetScalarParameterValue(TEXT("DebugOutputRefractR"), ForceR);
+			}
+			if (ForceN >= 0.f)
+			{
+				MID->SetScalarParameterValue(TEXT("DebugOutputRefractN"), ForceN);
+			}
+			if (ForceO >= 0.f)
+			{
+				MID->SetScalarParameterValue(TEXT("DebugOutputOffsetPos"), ForceO);
 			}
 		}
 	}

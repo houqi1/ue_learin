@@ -1,55 +1,75 @@
 // =============================================================================
-// GlassDualPassBackfaceCustom.usf — Material Custom entry (backface dual-pass)
+// Mirror of M_PhoneixGlass_Back Custom Code (prefer INLINE in material Code so
+// UE keeps DebugOutputRefractR in CustomExpression0 — include-only regressed debug).
 //
-// Same pattern as PhoneixGlass.usf:
-//   Material M_PhoneixGlass_Back → Custom node → #include this file
-//
-// Custom output: CMOT_Float3 (plug into Emissive on Unlit material)
-//
-// Expected Custom inputs (names must match material graph):
-//   WorldPos              float3   Absolute World Position
-//   WorldNormal           float3   Vertex Normal WS (or Pixel Normal WS)
-//   UV1                   float2   TexCoord1 (bake atlas; currently unused values)
-//   CameraWorldPos        float3   Camera Position WS
-//   ViewProjection0..3    float4   rows of world→clip (or use View_*, see material)
-//   SceneViewRectMin      float2
-//   SceneViewSize         float2
-//   SceneBufferInvSize    float2
-//   SceneEdgeSoftness     float
-//   IorStart              float
-//   UseTransmittance      float
-//   EnvRefraction         float
-//   FringeCurve           float
-//   FringeMix             float
-//   FringeColor           float3
-//   RefractionIridescence float
-//   DistScale             float
-//   DataATexture          Texture2D
-//   DataBTexture          Texture2D
-//   EnvMapTexture         TextureCube
-//   ColorsMapTexture      Texture2D
-//   SceneColorTexture     Texture2D
-//
-// Note: Texture inputs auto-provide *Sampler in Custom (UE convention).
-// ViewProjection is rebuilt from four float4 rows for Custom pin compatibility.
+// Refraction:  P + R * _DIST * DistScale
+// DebugOutputRefractR: 0=off  1=R  2=OffsetPos  3=Scene sample
 // =============================================================================
 
 #include "/Project/GlassDualPassBackfaceLib.ush"
 
+float3 Ndbg = normalize(WorldNormal);
+{
+	const float3 ToCamera = normalize(CameraWorldPos - WorldPos);
+	if (dot(Ndbg, ToCamera) < 0.0f)
+	{
+		Ndbg = -Ndbg;
+	}
+}
+const float3 Vdbg = normalize(WorldPos - CameraWorldPos);
+const float Etadbg = 1.0f / max(IorStart, 1.001f);
+float3 Rdbg = refract(Vdbg, Ndbg, Etadbg);
+if (dot(Rdbg, Rdbg) < 1e-8f)
+{
+	Rdbg = reflect(Vdbg, Ndbg);
+}
+Rdbg = normalize(Rdbg);
+
+FGlassBakeAttrs BakeDbg;
+float ConvDbg, ConcDbg, ThickDbg, DistDbg, PeaksDbg;
+BakeDbg.Decode(VertexColor.rgb, VertexColorA, UV1.xy, ConvDbg, ConcDbg, ThickDbg, DistDbg, PeaksDbg);
+const float StepDistDbg = DistDbg * max(DistScale, 0.0f);
+const float3 OffsetPosDbg = WorldPos + Rdbg * StepDistDbg;
+
+if (DebugOutputRefractR > 2.5f)
+{
+	float4x4 VPdbg = float4x4(
+		ViewProjection0, ViewProjection1, ViewProjection2, ViewProjection3);
+	FGlassBackfaceShading Gdbg;
+	float2 BufUV;
+	float EdgeMask;
+	Gdbg.ProjectWorldToSceneBufferUV(
+		OffsetPosDbg, VPdbg,
+		SceneViewRectMin.xy, SceneViewSize.xy, SceneBufferInvSize.xy, SceneEdgeSoftness,
+		BufUV, EdgeMask);
+	float3 Tex = 0.0f.xxx;
+	if (EdgeMask > 0.0f)
+	{
+		Tex = SceneColorTexture.SampleLevel(SceneColorTextureSampler, BufUV, 0).rgb * EdgeMask;
+	}
+	return Tex;
+}
+if (DebugOutputRefractR > 1.5f)
+{
+	const float StepLen = length(OffsetPosDbg - WorldPos);
+	float3 Vis = frac(abs(OffsetPosDbg) * 0.02f);
+	Vis.b = saturate(Vis.b * 0.5f + StepLen * 2.0f);
+	return saturate(Vis);
+}
+if (DebugOutputRefractR > 0.5f)
+{
+	return saturate(Rdbg * 0.5f + 0.5f);
+}
+
 FGlassBackfaceShading GBF;
-
-// Rebuild float4x4 from row vectors (Custom cannot take float4x4 pins reliably).
-// ViewProjection rows + float2 view metrics may arrive as float3/4 from VectorParameter pins.
 float4x4 VP = float4x4(
-	ViewProjection0,
-	ViewProjection1,
-	ViewProjection2,
-	ViewProjection3);
-
+	ViewProjection0, ViewProjection1, ViewProjection2, ViewProjection3);
 float3 Color = GBF.Shade(
 	WorldPos,
 	WorldNormal,
 	UV1.xy,
+	VertexColor.rgb,
+	VertexColorA,
 	CameraWorldPos,
 	VP,
 	SceneViewRectMin.xy,
@@ -64,14 +84,13 @@ float3 Color = GBF.Shade(
 	FringeColor.rgb,
 	RefractionIridescence,
 	DistScale,
-	DataATexture,
-	DataBTexture,
-	DataATextureSampler,
+	0.0f,
+	0.0f,
+	0.0f,
 	EnvMapTexture,
 	EnvMapTextureSampler,
 	ColorsMapTexture,
 	ColorsMapTextureSampler,
 	SceneColorTexture,
 	SceneColorTextureSampler);
-
 return Color;

@@ -1,0 +1,68 @@
+// =============================================================================
+// GlassDualPassBakeAttrs.ush — decode mesh-packed bake channels
+//
+// Vertex Color (COLOR0):
+//   R = _CONVEXITY   (0..1, clamped)
+//   G = _CONCAVITY   (0..1, clamped)
+//   B = normalize(_THICKNESS)   // body / other (not refraction step)
+//   A = normalize(_DIST)        // refraction step base: P + R * Dist * DistScale (back)
+//
+// UV1 (UVMap_Data):
+//   U = normalize(_PEAKS)
+//   V = 0
+//
+// value = n * (max - min) + min
+// =============================================================================
+
+#ifndef GLASS_DUAL_PASS_BAKE_ATTRS_USH
+#define GLASS_DUAL_PASS_BAKE_ATTRS_USH
+
+// Bake ranges (must match Blender / export).
+// Use #define — Material CustomExpression inlines this inside a function body,
+// where file-scope "static const float" can fail ("expected expression").
+#define kBakeThicknessMin 0.004322f
+#define kBakeThicknessMax 0.273090f
+#define kBakeDistMin      0.0f
+#define kBakeDistMax      0.341684f
+#define kBakePeaksMin     (-0.073783f)
+#define kBakePeaksMax     0.733881f
+
+// Struct methods only (safe inside Material CustomExpression)
+struct FGlassBakeAttrs
+{
+	float DecodeThickness(float Nb)
+	{
+		return saturate(Nb) * (kBakeThicknessMax - kBakeThicknessMin) + kBakeThicknessMin;
+	}
+
+	float DecodeDist(float Na)
+	{
+		return saturate(Na) * (kBakeDistMax - kBakeDistMin) + kBakeDistMin;
+	}
+
+	float DecodePeaks(float Nu)
+	{
+		return saturate(Nu) * (kBakePeaksMax - kBakePeaksMin) + kBakePeaksMin;
+	}
+
+	// From VertexColor RGB + A (separate pin — Custom often types VertexColor as float3)
+	// + UV1.xy (Peaks in U)
+	void Decode(
+		float3 VertexColorRGB,
+		float VertexColorA,
+		float2 UV1,
+		out float Convexity,
+		out float Concavity,
+		out float Thickness,
+		out float Dist,
+		out float Peaks)
+	{
+		Convexity = saturate(VertexColorRGB.r);
+		Concavity = saturate(VertexColorRGB.g);
+		Thickness = DecodeThickness(VertexColorRGB.b);
+		Dist = DecodeDist(VertexColorA);
+		Peaks = DecodePeaks(UV1.x);
+	}
+};
+
+#endif // GLASS_DUAL_PASS_BAKE_ATTRS_USH
