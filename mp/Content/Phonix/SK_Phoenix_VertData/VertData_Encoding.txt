@@ -1,0 +1,11 @@
+Scheme1 Vertex Data Encoding for Unreal
+COLOR0 (Col):
+  R = _CONVEXITY (raw 0-1)
+  G = _CONCAVITY (raw 0-1)
+  B = normalize(_THICKNESS)
+  A = normalize(_DIST)
+UV1 (UVMap_Data):
+  U = normalize(_PEAKS)
+  V = 0
+Asset path: /Game/Phonix/SK_Phoenix_VertData/
+Does NOT overwrite /Game/Phonix/SK_Phoenix/SK_Phoenix
