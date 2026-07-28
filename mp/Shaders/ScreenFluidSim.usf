@@ -1,0 +1,58 @@
+// Screen-space Eulerian velocity step (B-lite + light swirl inject).
+// Channel packing: RGB = velocity.xy (z unused), A = density/mask.
+// Drawn via DrawMaterialToRenderTarget with PrevVelocity = previous RT.
+
+#ifndef SCREEN_FLUID_SIM_USF
+#define SCREEN_FLUID_SIM_USF
+
+float4 ScreenFluidSimStep(
+	Texture2D PrevVelocity,
+	SamplerState PrevVelocitySampler,
+	float2 UV,
+	float2 ClickUV,
+	float ClickStrength,
+	float ClickRadius,
+	float Damping,
+	float AdvectScale,
+	float DiffuseWeight,
+	float TexelSize)
+{
+	// Semi-Lagrangian advection
+	float2 vel0 = PrevVelocity.SampleLevel(PrevVelocitySampler, UV, 0).xy;
+	float2 uvBack = UV - vel0 * AdvectScale;
+	float4 center = PrevVelocity.SampleLevel(PrevVelocitySampler, uvBack, 0);
+
+	// Light diffusion (5-tap)
+	float2 o = float2(TexelSize, 0.0);
+	float2 velL = PrevVelocity.SampleLevel(PrevVelocitySampler, uvBack - o, 0).xy;
+	float2 velR = PrevVelocity.SampleLevel(PrevVelocitySampler, uvBack + o, 0).xy;
+	float2 velD = PrevVelocity.SampleLevel(PrevVelocitySampler, uvBack - o.yx, 0).xy;
+	float2 velU = PrevVelocity.SampleLevel(PrevVelocitySampler, uvBack + o.yx, 0).xy;
+	float2 vel = lerp(center.xy, (center.xy + velL + velR + velD + velU) * 0.2, saturate(DiffuseWeight));
+
+	// Radial + swirl inject
+	float2 d = UV - ClickUV;
+	float r = length(d);
+	float rad = max(ClickRadius, 1e-4);
+	float w = ClickStrength * saturate(1.0 - r / rad);
+	w *= w; // softer falloff
+
+	float2 dir = (r > 1e-5) ? (d / r) : float2(0.0, 0.0);
+	float2 tang = float2(-dir.y, dir.x);
+	float2 force = dir * w + tang * (w * 0.4);
+
+	vel = vel * Damping + force;
+
+	// Soft speed limit
+	float speed = length(vel);
+	float maxSpeed = 1.5;
+	if (speed > maxSpeed)
+	{
+		vel *= maxSpeed / speed;
+	}
+
+	float dens = saturate(center.a * Damping + w * 0.75 + speed * 0.15);
+	return float4(vel, 0.0, dens);
+}
+
+#endif

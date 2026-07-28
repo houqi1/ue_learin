@@ -1,0 +1,28 @@
+// Stam Stable Fluids — PROJECT part 2: pressure Poisson Jacobi/GS iterate
+//   p ← (pL + pR + pD + pU - div) / 4
+//
+// STAGE Num Iterations = 20 (same as Stam's lin_solve iterations).
+// Neighbors Press* = Sample Previous Pressure (Jacobi) for parallel update.
+// PrevDivergence = divergence field from Divergence stage (fixed rhs).
+//
+// Virtual Include: StageCommon.ush then StagePressure.ush
+// Body: SF_Pressure(...)
+
+void SF_Pressure(
+	float PressL,
+	float PressR,
+	float PressD,
+	float PressU,
+	float PrevDivergence,
+	float2 PrevVelocity,
+	float PrevDensity,
+	out float OutPressure,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutDivergence)
+{
+	OutPressure = SF_PressureJacobi(PressL, PressR, PressD, PressU, PrevDivergence);
+	OutVelocity = PrevVelocity;
+	OutDensity = PrevDensity;
+	OutDivergence = PrevDivergence;
+}

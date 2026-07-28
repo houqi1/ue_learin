@@ -1,0 +1,27 @@
+// Stam Stable Fluids — PROJECT part 3: velocity correction
+//   u ← u - 0.5*N*(p_{i+1}-p_{i-1})
+//   v ← v - 0.5*N*(p_{j+1}-p_{j-1})
+//
+// Virtual Include: StageCommon.ush then StageProject.ush
+// Body: SF_Project(...)
+
+void SF_Project(
+	float2 PrevVelocity,
+	float PressL,
+	float PressR,
+	float PressD,
+	float PressU,
+	float PrevDensity,
+	float PrevPressure,
+	float PrevDivergence,
+	float GridN,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutPressure,
+	out float OutDivergence)
+{
+	OutVelocity = SF_ProjectVelocity(PrevVelocity, PressL, PressR, PressD, PressU, GridN);
+	OutDensity = PrevDensity;
+	OutPressure = PrevPressure;
+	OutDivergence = PrevDivergence;
+}

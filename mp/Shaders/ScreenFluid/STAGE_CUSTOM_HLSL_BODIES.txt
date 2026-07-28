@@ -1,0 +1,92 @@
+================================================================================
+Stam Stable Fluids (SIGGRAPH 1999) — Niagara Custom HLSL setup
+================================================================================
+Paper velocity step order:
+  add force → advect → diffuse → project
+  (project = Divergence → Pressure×20 → Project)
+
+Paper density (coupled here into the same stages):
+  add source → advect → diffuse
+
+Virtual Include for EVERY stage Custom that uses helpers (recommended order):
+  1) /Project/ScreenFluid/StageCommon.ush
+  2) /Project/ScreenFluid/StageXXXX.ush
+
+OR only StageXXXX.ush if it #includes Common (Inject/Advect/Diffuse/Div/Pressure/Project do).
+
+Shared constants (User floats or constants on Map Get):
+  Dt          = 1/60   (or 0.016666)
+  GridN       = 512    (must match SetNumCells / RT)
+  Viscosity   = 0.0001 .. 0.001  (Stam-scale; tune)
+  Diffusion   = 0.0001 .. 0.001  (density)
+
+Stage order (enable in this order):
+  0 Init        (optional Niagara: zero StackContext fields)
+  1 Inject      add force + density source
+  2 Advect      semi-Lagrangian u and d
+  3 Diffuse     NumIterations = 20
+  4 Divergence  div field
+  5 Pressure    NumIterations = 20
+  6 Project     u -= grad p
+  7 ExportRT
+
+Neighbor UV (Texel = 1/GridN):
+  L: Unit + float2(-Texel, 0)
+  R: Unit + float2( Texel, 0)
+  D: Unit + float2(0, -Texel)
+  U: Unit + float2(0,  Texel)
+Use Sample Previous + Saturate; wire Vector2 into Sample UV (no bare saturate();).
+
+--------------------------------------------------------------------------------
+Inject
+Include: /Project/ScreenFluid/StageInject.ush  (pulls Common via #include)
+--------------------------------------------------------------------------------
+SF_Inject(UnitToUV, ClickUV, Strength, Radius, InjectPulse, Dt, PrevVelocity, PrevDensity, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+IN:  UnitToUV, ClickUV (float2); Strength, Radius, InjectPulse, Dt, PrevDensity, PrevPressure, PrevDivergence (float); PrevVelocity (float2)
+OUT: OutVelocity (float2); OutDensity, OutPressure, OutDivergence (float)
+Map: StackContext.*  |  UnitToUV=ExecutionIndexToUnit.xy  User.*=Click*
+
+--------------------------------------------------------------------------------
+Advect
+Include: /Project/ScreenFluid/StageAdvect.ush
+--------------------------------------------------------------------------------
+// Graph first:
+//   UV_back = saturate(UnitToUV - Dt * PrevVelocity)   // wire to Sample UV
+//   SampleVel  = SamplePrevious Velocity  @ UV_back
+//   SampleDens = SamplePrevious Density   @ UV_back
+SF_Advect(SampleVel, SampleDens, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+--------------------------------------------------------------------------------
+Diffuse  (Stage NumIterations = 20)
+Include: /Project/ScreenFluid/StageDiffuse.ush
+--------------------------------------------------------------------------------
+SF_Diffuse(CenterVel, VelL, VelR, VelD, VelU, CenterDens, DensL, DensR, DensD, DensU, Dt, Viscosity, Diffusion, GridN, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+CenterVel/Dens = field entering diffuse (after Advect), fixed as x0
+Vel*/Dens*     = SamplePrevious neighbors (Jacobi iterate)
+
+--------------------------------------------------------------------------------
+Divergence
+--------------------------------------------------------------------------------
+SF_Divergence(PrevVelocity, VelL, VelR, VelD, VelU, PrevDensity, PrevPressure, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+--------------------------------------------------------------------------------
+Pressure  (Stage NumIterations = 20)
+--------------------------------------------------------------------------------
+SF_Pressure(PressL, PressR, PressD, PressU, PrevDivergence, PrevVelocity, PrevDensity, OutPressure, OutVelocity, OutDensity, OutDivergence);
+
+--------------------------------------------------------------------------------
+Project
+--------------------------------------------------------------------------------
+SF_Project(PrevVelocity, PressL, PressR, PressD, PressU, PrevDensity, PrevPressure, PrevDivergence, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+--------------------------------------------------------------------------------
+ExportRT
+--------------------------------------------------------------------------------
+SF_ExportRT(PrevVelocity, PrevDensity, OutColor);
+
+================================================================================
+After editing .ush: Apply Scratch on each module + Compile Niagara System.
+Niagara does NOT always auto-reload virtual includes.
+================================================================================

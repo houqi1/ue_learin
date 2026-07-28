@@ -1,0 +1,48 @@
+// Stam Stable Fluids — ADD FORCE / ADD SOURCE
+// Paper step: "add force" (velocity) + scalar source for density (dens_step).
+//
+//   u ← u + dt * F
+//   d ← d + dt * S
+//
+// Virtual Include (order matters):
+//   1) /Project/ScreenFluid/StageCommon.ush
+//   2) /Project/ScreenFluid/StageInject.ush
+// Body:
+// SF_Inject(UnitToUV, ClickUV, Strength, Radius, InjectPulse, Dt,
+//           PrevVelocity, PrevDensity, PrevPressure, PrevDivergence,
+//           OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+void SF_Inject(
+	float2 UnitToUV,
+	float2 ClickUV,
+	float Strength,
+	float Radius,
+	float InjectPulse,
+	float Dt,
+	float2 PrevVelocity,
+	float PrevDensity,
+	float PrevPressure,
+	float PrevDivergence,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutPressure,
+	out float OutDivergence)
+{
+	float dt = max(Dt, 0.0);
+	float w = SF_SplatWeight(UnitToUV, ClickUV, Radius);
+	float gate = saturate(InjectPulse); // 0 = no source this frame
+	float amp = max(Strength, 0.0) * gate * w;
+
+	float2 dlt = UnitToUV - ClickUV;
+	float r = length(dlt);
+	float2 dir = (r > 1e-6) ? (dlt / r) : float2(0.0, 0.0);
+	// Radial force + mild tangential swirl (still an external force field F)
+	float2 tang = float2(-dir.y, dir.x);
+	float2 F = dir * amp + tang * (amp * 0.35);
+
+	// Stam add_source: field += dt * source
+	OutVelocity = PrevVelocity + dt * F;
+	OutDensity = PrevDensity + dt * amp;
+	OutPressure = PrevPressure;
+	OutDivergence = PrevDivergence;
+}

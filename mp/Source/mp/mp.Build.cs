@@ -21,7 +21,11 @@ public class mp : ModuleRules
 			"Renderer"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			"Niagara",
+			"NiagaraCore"
+		});
 
 		// FPostProcessingInputs, FViewInfo, ScenePrivate for material mesh backface pass.
 		PrivateIncludePaths.Add(Path.Combine(EngineDirectory, "Source/Runtime/Renderer/Internal"));

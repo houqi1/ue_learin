@@ -1,0 +1,26 @@
+// Stam Stable Fluids — PROJECT part 1: divergence
+//   div = -0.5/N * ((u_{i+1}-u_{i-1}) + (v_{j+1}-v_{j-1}))
+// Stored for pressure Poisson rhs (GDC / Stable Fluids discrete form).
+//
+// Virtual Include: StageCommon.ush then StageDivergence.ush
+// Body: SF_Divergence(...)
+
+void SF_Divergence(
+	float2 PrevVelocity,
+	float2 VelL,
+	float2 VelR,
+	float2 VelD,
+	float2 VelU,
+	float PrevDensity,
+	float PrevPressure,
+	float GridN,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutPressure,
+	out float OutDivergence)
+{
+	OutDivergence = SF_DivergenceStam(VelL, VelR, VelD, VelU, GridN);
+	OutVelocity = PrevVelocity;
+	OutDensity = PrevDensity;
+	OutPressure = PrevPressure; // p will be solved next; keep or zero in graph if desired
+}

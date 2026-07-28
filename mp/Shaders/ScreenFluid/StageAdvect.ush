@@ -1,0 +1,39 @@
+// Stam Stable Fluids — ADVECT (semi-Lagrangian / "Transport")
+// Paper: trace particle backward x* = x - dt*u, interpolate field at x*.
+//
+// BEFORE calling, sample Grid at UV_back (do this in Niagara graph):
+//   UV_back = saturate(UnitToUV - Dt * PrevVelocity)   // SF_BacktraceUV
+//   SampleVel  = SamplePrevious Velocity @ UV_back
+//   SampleDens = SamplePrevious Density  @ UV_back
+//
+// Velocity used for backtrace must be the pre-advect field (PrevVelocity at this cell).
+//
+// Virtual Include:
+//   1) /Project/ScreenFluid/StageCommon.ush
+//   2) /Project/ScreenFluid/StageAdvect.ush
+// Body:
+// SF_Advect(SampleVel, SampleDens, PrevPressure, PrevDivergence,
+//           OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+void SF_Advect(
+	float2 SampleVel,
+	float SampleDens,
+	float PrevPressure,
+	float PrevDivergence,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutPressure,
+	out float OutDivergence)
+{
+	// Pure semi-Lagrangian lookup result
+	OutVelocity = SampleVel;
+	OutDensity = SampleDens;
+	OutPressure = PrevPressure;
+	OutDivergence = PrevDivergence;
+}
+
+// Optional: compute backtrace UV in Custom if you pass pins instead of graph expr.
+float2 SF_AdvectBacktraceUV(float2 UnitToUV, float2 PrevVelocity, float Dt)
+{
+	return SF_BacktraceUV(UnitToUV, PrevVelocity, Dt);
+}

@@ -1,0 +1,25 @@
+// Used by M_PP_ScreenFluidDistort MaterialExpressionCustom
+// Include path: /Project/ScreenFluidDistort.usf
+//
+// Field = sample of Velocity RT (RG=velocity, A=density)
+// Returns UV offset. Does NOT sample scene color (use SceneTexture node).
+
+#ifndef SCREEN_FLUID_DISTORT_USF
+#define SCREEN_FLUID_DISTORT_USF
+
+float2 ScreenFluidOffsetFromField(float4 Field, float MaxOffset, float Intensity)
+{
+	float2 Vel = Field.rg;
+	// If Export leaves A=0, still warp from velocity length (solid red RG works).
+	float Mask = saturate(max(Field.a, length(Vel) * 4.0));
+	return Vel * MaxOffset * Mask * Intensity;
+}
+
+float3 ScreenFluidDebugColor(float4 Field)
+{
+	float2 Vel = Field.rg;
+	float Mask = saturate(max(Field.a, length(Vel) * 4.0));
+	return float3(Vel * 0.5 + 0.5, Mask);
+}
+
+#endif

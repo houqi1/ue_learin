@@ -1,0 +1,200 @@
+// Screen-space 2D Eulerian fluid stages (Stable Fluids / Jos Stam style).
+// Channel packing for velocity RTs: RG = velocity.xy, B unused, A = density mask.
+// Pressure / Divergence RTs: R = scalar value.
+
+#ifndef SCREEN_FLUID_GRID2D_USH
+#define SCREEN_FLUID_GRID2D_USH
+
+// Stage IDs (must match C++)
+#define SF_STAGE_INJECT      0
+#define SF_STAGE_ADVECT      1
+#define SF_STAGE_DIFFUSE     2
+#define SF_STAGE_DIVERGENCE  3
+#define SF_STAGE_PRESSURE    4
+#define SF_STAGE_PROJECT     5
+
+float2 SF_SampleVel(Texture2D Tex, SamplerState S, float2 UV)
+{
+	return Tex.SampleLevel(S, saturate(UV), 0).xy;
+}
+
+float SF_SampleR(Texture2D Tex, SamplerState S, float2 UV)
+{
+	return Tex.SampleLevel(S, saturate(UV), 0).r;
+}
+
+float4 SF_Sample4(Texture2D Tex, SamplerState S, float2 UV)
+{
+	return Tex.SampleLevel(S, saturate(UV), 0);
+}
+
+// --- Inject: add radial + swirl force at ClickUV ---
+float4 SF_Inject(
+	Texture2D VelTex, SamplerState VelS,
+	float2 UV,
+	float2 ClickUV,
+	float Strength,
+	float Radius,
+	float DensityAmount)
+{
+	float4 prev = SF_Sample4(VelTex, VelS, UV);
+	float2 vel = prev.xy;
+	float dens = prev.a;
+
+	float2 d = UV - ClickUV;
+	float r = length(d);
+	float rad = max(Radius, 1e-4);
+	float w = Strength * saturate(1.0 - r / rad);
+	w = w * w;
+
+	float2 dir = (r > 1e-5) ? (d / r) : float2(0.0, 0.0);
+	float2 tang = float2(-dir.y, dir.x);
+	// Ensure non-zero force even near center for visible field
+	float2 force = dir * w + tang * (w * 0.45) + float2(w, -w) * 0.05;
+
+	vel += force;
+	dens = saturate(dens * 0.995 + w * DensityAmount);
+
+	float sp = length(vel);
+	if (sp > 2.0)
+	{
+		vel *= 2.0 / sp;
+	}
+	return float4(vel, 0.0, dens);
+}
+
+// --- Advect velocity (semi-Lagrangian) ---
+float4 SF_Advect(
+	Texture2D VelTex, SamplerState VelS,
+	float2 UV,
+	float AdvectScale,
+	float Damping)
+{
+	float2 vel0 = SF_SampleVel(VelTex, VelS, UV);
+	float2 uvBack = saturate(UV - vel0 * AdvectScale);
+	float4 back = SF_Sample4(VelTex, VelS, uvBack);
+	float2 vel = back.xy * Damping;
+	float dens = back.a * Damping;
+	return float4(vel, 0.0, dens);
+}
+
+// --- Diffuse velocity (Jacobi-like 5-tap) ---
+float4 SF_Diffuse(
+	Texture2D VelTex, SamplerState VelS,
+	float2 UV,
+	float Texel,
+	float Viscosity)
+{
+	float2 o = float2(Texel, 0.0);
+	float4 c = SF_Sample4(VelTex, VelS, UV);
+	float2 vL = SF_SampleVel(VelTex, VelS, UV - o);
+	float2 vR = SF_SampleVel(VelTex, VelS, UV + o);
+	float2 vD = SF_SampleVel(VelTex, VelS, UV - o.yx);
+	float2 vU = SF_SampleVel(VelTex, VelS, UV + o.yx);
+	float aL = SF_Sample4(VelTex, VelS, UV - o).a;
+	float aR = SF_Sample4(VelTex, VelS, UV + o).a;
+	float aD = SF_Sample4(VelTex, VelS, UV - o.yx).a;
+	float aU = SF_Sample4(VelTex, VelS, UV + o.yx).a;
+
+	float visc = saturate(Viscosity);
+	float2 vel = lerp(c.xy, (c.xy + vL + vR + vD + vU) * 0.2, visc);
+	float dens = lerp(c.a, (c.a + aL + aR + aD + aU) * 0.2, visc * 0.5);
+	return float4(vel, 0.0, dens);
+}
+
+// --- Divergence of velocity → R channel ---
+float4 SF_Divergence(
+	Texture2D VelTex, SamplerState VelS,
+	float2 UV,
+	float Texel)
+{
+	float2 o = float2(Texel, 0.0);
+	float2 vL = SF_SampleVel(VelTex, VelS, UV - o);
+	float2 vR = SF_SampleVel(VelTex, VelS, UV + o);
+	float2 vD = SF_SampleVel(VelTex, VelS, UV - o.yx);
+	float2 vU = SF_SampleVel(VelTex, VelS, UV + o.yx);
+	// central difference
+	float div = 0.5 * ((vR.x - vL.x) + (vU.y - vD.y));
+	return float4(div, 0.0, 0.0, 1.0);
+}
+
+// --- Pressure Jacobi iteration ---
+float4 SF_PressureJacobi(
+	Texture2D PressureTex, SamplerState PressureS,
+	Texture2D DivTex, SamplerState DivS,
+	float2 UV,
+	float Texel)
+{
+	float2 o = float2(Texel, 0.0);
+	float pL = SF_SampleR(PressureTex, PressureS, UV - o);
+	float pR = SF_SampleR(PressureTex, PressureS, UV + o);
+	float pD = SF_SampleR(PressureTex, PressureS, UV - o.yx);
+	float pU = SF_SampleR(PressureTex, PressureS, UV + o.yx);
+	float div = SF_SampleR(DivTex, DivS, UV);
+	// ∇²p = div  →  p = (sum neigh - div) / 4   (dx=1 in texel units)
+	float p = (pL + pR + pD + pU - div) * 0.25;
+	return float4(p, 0.0, 0.0, 1.0);
+}
+
+// --- Project: V -= grad(P) ---
+float4 SF_Project(
+	Texture2D VelTex, SamplerState VelS,
+	Texture2D PressureTex, SamplerState PressureS,
+	float2 UV,
+	float Texel)
+{
+	float2 o = float2(Texel, 0.0);
+	float4 c = SF_Sample4(VelTex, VelS, UV);
+	float pL = SF_SampleR(PressureTex, PressureS, UV - o);
+	float pR = SF_SampleR(PressureTex, PressureS, UV + o);
+	float pD = SF_SampleR(PressureTex, PressureS, UV - o.yx);
+	float pU = SF_SampleR(PressureTex, PressureS, UV + o.yx);
+	float2 grad = 0.5 * float2(pR - pL, pU - pD);
+	float2 vel = c.xy - grad;
+	return float4(vel, 0.0, c.a);
+}
+
+// Dispatch by stage id for single-material multi-pass path
+float4 SF_RunStage(
+	int StageId,
+	Texture2D VelTex, SamplerState VelS,
+	Texture2D PressureTex, SamplerState PressureS,
+	Texture2D DivTex, SamplerState DivS,
+	float2 UV,
+	float2 ClickUV,
+	float Strength,
+	float Radius,
+	float AdvectScale,
+	float Damping,
+	float Viscosity,
+	float Texel,
+	float DensityAmount)
+{
+	if (StageId == SF_STAGE_INJECT)
+	{
+		return SF_Inject(VelTex, VelS, UV, ClickUV, Strength, Radius, DensityAmount);
+	}
+	if (StageId == SF_STAGE_ADVECT)
+	{
+		return SF_Advect(VelTex, VelS, UV, AdvectScale, Damping);
+	}
+	if (StageId == SF_STAGE_DIFFUSE)
+	{
+		return SF_Diffuse(VelTex, VelS, UV, Texel, Viscosity);
+	}
+	if (StageId == SF_STAGE_DIVERGENCE)
+	{
+		return SF_Divergence(VelTex, VelS, UV, Texel);
+	}
+	if (StageId == SF_STAGE_PRESSURE)
+	{
+		return SF_PressureJacobi(PressureTex, PressureS, DivTex, DivS, UV, Texel);
+	}
+	if (StageId == SF_STAGE_PROJECT)
+	{
+		return SF_Project(VelTex, VelS, PressureTex, PressureS, UV, Texel);
+	}
+	return float4(0, 0, 0, 0);
+}
+
+#endif
