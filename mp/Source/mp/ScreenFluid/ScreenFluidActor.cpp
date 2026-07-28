@@ -27,6 +27,8 @@ namespace SFUser
 	static const FName ClickRadiusShort(TEXT("ClickRadius"));
 	static const FName InjectPulse(TEXT("User.InjectPulse"));
 	static const FName InjectPulseShort(TEXT("InjectPulse"));
+	static const FName InjectDir(TEXT("User.InjectDir"));
+	static const FName InjectDirShort(TEXT("InjectDir"));
 	static const FName VelocityRT(TEXT("User.VelocityRT"));
 	static const FName VelocityRTShort(TEXT("VelocityRT"));
 }
@@ -87,9 +89,7 @@ void AScreenFluidActor::BeginPlay()
 	ApplyPostProcessBlendable();
 	SetupPlayerInputHelpers();
 	ActivateNiagara();
-
-	// Seed one center inject so field is visible immediately
-	InjectAtScreenUV(FVector2D(0.5f, 0.5f));
+	// No seed inject: density only when pointer moves while held.
 	PushNiagaraParams();
 
 	UE_LOG(LogScreenFluid, Warning,
@@ -197,8 +197,10 @@ void AScreenFluidActor::Tick(float DeltaSeconds)
 
 void AScreenFluidActor::InjectAtScreenUV(FVector2D ScreenUV, float StrengthOverride, float RadiusOverride)
 {
+	// Manual inject: place brush at UV with a default +X stroke direction (for BP/debug).
 	PendingInjectUV.X = FMath::Clamp(ScreenUV.X, 0.f, 1.f);
 	PendingInjectUV.Y = FMath::Clamp(ScreenUV.Y, 0.f, 1.f);
+	PendingInjectDir = FVector2D(1.f, 0.f);
 	InjectPulse = 1.f;
 	if (StrengthOverride >= 0.f)
 	{
@@ -208,8 +210,8 @@ void AScreenFluidActor::InjectAtScreenUV(FVector2D ScreenUV, float StrengthOverr
 	{
 		ClickRadius = RadiusOverride;
 	}
-	UE_LOG(LogScreenFluid, Log, TEXT("Inject UV=(%.3f,%.3f) strength=%.2f"),
-		PendingInjectUV.X, PendingInjectUV.Y, ClickStrength);
+	UE_LOG(LogScreenFluid, Log, TEXT("Inject UV=(%.3f,%.3f) dir=(%.2f,%.2f) strength=%.2f"),
+		PendingInjectUV.X, PendingInjectUV.Y, PendingInjectDir.X, PendingInjectDir.Y, ClickStrength);
 }
 
 void AScreenFluidActor::EnsureVelocityRT()
@@ -439,6 +441,8 @@ void AScreenFluidActor::PushNiagaraParams()
 	const float Strength = ClickStrength * InjectPulse;
 	NiagaraFluid->SetVariableVec2(SFUser::ClickUV, PendingInjectUV);
 	NiagaraFluid->SetVariableVec2(SFUser::ClickUVShort, PendingInjectUV);
+	NiagaraFluid->SetVariableVec2(SFUser::InjectDir, PendingInjectDir);
+	NiagaraFluid->SetVariableVec2(SFUser::InjectDirShort, PendingInjectDir);
 	NiagaraFluid->SetVariableFloat(SFUser::ClickStrength, Strength);
 	NiagaraFluid->SetVariableFloat(SFUser::ClickStrengthShort, Strength);
 	NiagaraFluid->SetVariableFloat(SFUser::ClickRadius, ClickRadius);
@@ -546,26 +550,61 @@ void AScreenFluidActor::TickInput()
 		LastMouseUV = UV;
 	}
 
-	if (bRespondToLeftMouse)
+	// Default: no inject this frame (stationary or not held).
+	bool bWantInject = false;
+	FVector2D MoveDir = FVector2D::ZeroVector;
+	float MovePulse = 0.f;
+
+	const bool bLeftDown = bRespondToLeftMouse && PC->IsInputKeyDown(EKeys::LeftMouseButton);
+	const bool bSpaceDown = bRespondToSpaceBar && PC->IsInputKeyDown(EKeys::SpaceBar);
+	const bool bHeld = bLeftDown || bSpaceDown;
+
+	if (bHeld && bHasUV)
 	{
-		const bool bDown = PC->IsInputKeyDown(EKeys::LeftMouseButton);
-		if (bDown && bHasUV && (!bMouseWasDown || bContinuousWhileHeld))
+		PendingInjectUV = UV;
+
+		// Inject only when pointer moved this frame (not on hold-still).
+		if (bHasPrevHeldMouseUV)
 		{
-			PendingInjectUV = UV;
-			InjectPulse = 1.f;
+			const FVector2D Delta = UV - PrevHeldMouseUV;
+			const float MoveLen = Delta.Size();
+			if (MoveLen >= MinMoveUV)
+			{
+				MoveDir = Delta / MoveLen;
+				MovePulse = FMath::Clamp(MoveLen * MoveStrengthScale, 0.f, 1.f);
+				bWantInject = true;
+			}
 		}
-		bMouseWasDown = bDown;
+
+		PrevHeldMouseUV = UV;
+		bHasPrevHeldMouseUV = true;
 	}
-	if (bRespondToSpaceBar)
+	else
 	{
-		const bool bSpace = PC->IsInputKeyDown(EKeys::SpaceBar);
-		if (bSpace && (!bSpaceWasDown || bContinuousWhileHeld))
-		{
-			PendingInjectUV = bHasUV ? UV : LastMouseUV;
-			InjectPulse = 1.f;
-		}
-		bSpaceWasDown = bSpace;
+		bHasPrevHeldMouseUV = false;
+		PendingInjectDir = FVector2D::ZeroVector;
 	}
+
+	if (bWantInject)
+	{
+		PendingInjectDir = MoveDir;
+		InjectPulse = MovePulse;
+	}
+	else if (!bHeld)
+	{
+		// Release: clear stroke
+		PendingInjectDir = FVector2D::ZeroVector;
+		InjectPulse = 0.f;
+	}
+	else
+	{
+		// Held but not moving: do not inject
+		PendingInjectDir = FVector2D::ZeroVector;
+		InjectPulse = 0.f;
+	}
+
+	bMouseWasDown = bLeftDown;
+	bSpaceWasDown = bSpaceDown;
 }
 
 bool AScreenFluidActor::GetMouseScreenUV(FVector2D& OutUV) const

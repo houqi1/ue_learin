@@ -76,6 +76,19 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject")
 	float PulseDecayPerSecond = 4.0f;
 
+	/**
+	 * Minimum mouse move in screen UV per frame to count as "moving".
+	 * Below this: no inject (InjectPulse=0).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
+	float MinMoveUV = 0.0008f;
+
+	/**
+	 * Scales |delta UV| into InjectPulse / strength (pulse ≈ saturate(move * MoveStrengthScale)).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
+	float MoveStrengthScale = 80.f;
+
 	// --- Display ---
 	/** UV warp scale. Temporarily large so solid/non-zero RT is obvious in PIE. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display", meta = (ClampMin = "0.0"))
@@ -133,7 +146,12 @@ private:
 	bool bSpaceWasDown = false;
 	float InjectPulse = 0.f;
 	FVector2D PendingInjectUV = FVector2D(0.5f, 0.5f);
+	/** Unit direction of mouse motion in UV (this frame); zero when not moving. */
+	FVector2D PendingInjectDir = FVector2D::ZeroVector;
 	FVector2D LastMouseUV = FVector2D(0.5f, 0.5f);
+	/** Previous frame UV while button held (for delta). */
+	FVector2D PrevHeldMouseUV = FVector2D(0.5f, 0.5f);
+	bool bHasPrevHeldMouseUV = false;
 	float LogTimer = 0.f;
 	float VerifyLogCooldown = 0.f;
 	float PrevInjectPulse = 0.f;

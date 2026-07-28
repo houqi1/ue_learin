@@ -38,14 +38,20 @@ Neighbor UV (Texel = 1/GridN):
 Use Sample Previous + Saturate; wire Vector2 into Sample UV (no bare saturate();).
 
 --------------------------------------------------------------------------------
-Inject
-Include: /Project/ScreenFluid/StageInject.ush  (pulls Common via #include)
+Inject (stroke: inject only while mouse moves; force/density along InjectDir)
+Include: StageCommon.ush then StageInject.ush
 --------------------------------------------------------------------------------
-SF_Inject(UnitToUV, ClickUV, Strength, Radius, InjectPulse, Dt, PrevVelocity, PrevDensity, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+SF_Inject(UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt, PrevVelocity, PrevDensity, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
 
-IN:  UnitToUV, ClickUV (float2); Strength, Radius, InjectPulse, Dt, PrevDensity, PrevPressure, PrevDivergence (float); PrevVelocity (float2)
+IN:  UnitToUV, ClickUV, InjectDir (float2)
+     Strength, Radius, InjectPulse, Dt, PrevDensity, PrevPressure, PrevDivergence (float)
+     PrevVelocity (float2)
 OUT: OutVelocity (float2); OutDensity, OutPressure, OutDivergence (float)
-Map: StackContext.*  |  UnitToUV=ExecutionIndexToUnit.xy  User.*=Click*
+Map: StackContext Velocity/Density/Pressure/Divergence
+     UnitToUV=ExecutionIndexToUnit.xy
+     ClickUV=User.ClickUV  InjectDir=User.InjectDir
+     Strength=User.ClickStrength  Radius=User.ClickRadius  InjectPulse=User.InjectPulse
+     (Host: pulse=0 when pointer stationary; InjectDir = move unit vector)
 
 --------------------------------------------------------------------------------
 Advect

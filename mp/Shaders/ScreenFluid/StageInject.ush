@@ -1,20 +1,23 @@
-// Stam Stable Fluids — ADD FORCE / ADD SOURCE
-// Paper step: "add force" (velocity) + scalar source for density (dens_step).
+// Stam add force/source — stroke inject:
+//   - Density + force only when InjectPulse > 0 (host sets pulse from mouse *motion*)
+//   - Force / density push along InjectDir (unit UV direction of movement)
+//   - Spatial falloff: soft disc around ClickUV
 //
-//   u ← u + dt * F
-//   d ← d + dt * S
-//
-// Virtual Include (order matters):
+// Virtual Include:
 //   1) /Project/ScreenFluid/StageCommon.ush
 //   2) /Project/ScreenFluid/StageInject.ush
 // Body:
-// SF_Inject(UnitToUV, ClickUV, Strength, Radius, InjectPulse, Dt,
+// SF_Inject(UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt,
 //           PrevVelocity, PrevDensity, PrevPressure, PrevDivergence,
 //           OutVelocity, OutDensity, OutPressure, OutDivergence);
+//
+// Niagara User params (from AScreenFluidActor):
+//   ClickUV, InjectDir (Vector2), ClickStrength, ClickRadius, InjectPulse
 
 void SF_Inject(
 	float2 UnitToUV,
 	float2 ClickUV,
+	float2 InjectDir,
 	float Strength,
 	float Radius,
 	float InjectPulse,
@@ -30,17 +33,17 @@ void SF_Inject(
 {
 	float dt = max(Dt, 0.0);
 	float w = SF_SplatWeight(UnitToUV, ClickUV, Radius);
-	float gate = saturate(InjectPulse); // 0 = no source this frame
-	float amp = max(Strength, 0.0) * gate * w;
+	float gate = saturate(InjectPulse);
+	float dirLen = length(InjectDir);
+	// Stationary or zero direction → no inject
+	float moveGate = (dirLen > 1e-5) ? 1.0 : 0.0;
+	float amp = max(Strength, 0.0) * gate * moveGate * w;
 
-	float2 dlt = UnitToUV - ClickUV;
-	float r = length(dlt);
-	float2 dir = (r > 1e-6) ? (dlt / r) : float2(0.0, 0.0);
-	// Radial force + mild tangential swirl (still an external force field F)
-	float2 tang = float2(-dir.y, dir.x);
-	float2 F = dir * amp + tang * (amp * 0.35);
+	float2 dir = (dirLen > 1e-5) ? (InjectDir / dirLen) : float2(0.0, 0.0);
+	// Force along stroke direction (Stam external force F)
+	float2 F = dir * amp;
 
-	// Stam add_source: field += dt * source
+	// u += dt*F ; d += dt*S  (S = amp along brush)
 	OutVelocity = PrevVelocity + dt * F;
 	OutDensity = PrevDensity + dt * amp;
 	OutPressure = PrevPressure;
