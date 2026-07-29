@@ -1,98 +1,105 @@
 ================================================================================
-Stam Stable Fluids (SIGGRAPH 1999) — Niagara Custom HLSL setup
+Stable Fluids — 6 kernels only (+ optional Init + Export)
+GPU / Niagara Simulation Stage = one kernel pass over Grid2D
 ================================================================================
-Paper velocity step order:
-  add force → advect → diffuse → project
-  (project = Divergence → Pressure×20 → Project)
 
-Paper density (coupled here into the same stages):
-  add source → advect → diffuse
+Solver order (Always, except Init):
 
-Virtual Include for EVERY stage Custom that uses helpers (recommended order):
-  1) /Project/ScreenFluid/StageCommon.ush
-  2) /Project/ScreenFluid/StageXXXX.ush
+  0 Init         On Simulation Reset | zeros (Niagara only, not a Stam kernel)
+  1 Inject       add force + density source          NumIter=1
+  2 Advect       semi-Lagrangian u + d               NumIter=1
+  3 Diffuse      implicit viscosity + dens diffusion NumIter=20
+  4 Divergence   div field, p=0                      NumIter=1
+  5 Pressure     Jacobi Poisson                      NumIter=20
+  6 Project      u -= grad p                         NumIter=1
+  7 ExportRT     Grid → RT (engine output, not Stam) NumIter=1
 
-OR only StageXXXX.ush if it #includes Common (Inject/Advect/Diffuse/Div/Pressure/Project do).
+DO NOT create: DiffuseVel/Dens, AdvectVel/Dens, DivA/DivB, double Project.
 
-Shared constants (User floats or constants on Map Get):
-  Dt          = 1/60   (or 0.016666)
-  GridN       = 512    (must match SetNumCells / RT)
-  Viscosity   = 0.0001 .. 0.001  (Stam-scale; tune)
-  Diffusion   = 0.0001 .. 0.001  (density)
-
-Stage order (enable in this order):
-  0 Init        (optional Niagara: zero StackContext fields)
-  1 Inject      add force + density source
-  2 Advect      semi-Lagrangian u and d
-  3 Diffuse     NumIterations = 20
-  4 Divergence  div field
-  5 Pressure    NumIterations = 20
-  6 Project     u -= grad p
-  7 ExportRT
-
-Neighbor UV (Texel = 1/GridN):
-  L: Unit + float2(-Texel, 0)
-  R: Unit + float2( Texel, 0)
-  D: Unit + float2(0, -Texel)
-  U: Unit + float2(0,  Texel)
-Use Sample Previous + Saturate; wire Vector2 into Sample UV (no bare saturate();).
+Paper-style order used here:
+  force → advect → diffuse → project(div,pressure,grad)
+(GDC double-project is NOT used — that would need more kernels.)
 
 --------------------------------------------------------------------------------
-Inject (stroke: inject only while mouse moves; force/density along InjectDir)
-Include: StageCommon.ush then StageInject.ush
+User params (AScreenFluidActor)
 --------------------------------------------------------------------------------
-SF_Inject(UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt, PrevVelocity, PrevDensity, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+  ClickUV, InjectForce (Vec2), DensitySrc, InjectPulse, ClickRadius
+  Dt, GridN, Viscosity, Diffusion, VelocityRT
 
-IN:  UnitToUV, ClickUV, InjectDir (float2)
-     Strength, Radius, InjectPulse, Dt, PrevDensity, PrevPressure, PrevDivergence (float)
-     PrevVelocity (float2)
-OUT: OutVelocity (float2); OutDensity, OutPressure, OutDivergence (float)
-Map: StackContext Velocity/Density/Pressure/Divergence
-     UnitToUV=ExecutionIndexToUnit.xy
-     ClickUV=User.ClickUV  InjectDir=User.InjectDir
-     Strength=User.ClickStrength  Radius=User.ClickRadius  InjectPulse=User.InjectPulse
-     (Host: pulse=0 when pointer stationary; InjectDir = move unit vector)
+Texel = 1/GridN
+Neighbor UV = UnitToUV ± Texel, Saturate, Sample Previous
 
---------------------------------------------------------------------------------
-Advect
-Include: /Project/ScreenFluid/StageAdvect.ush
---------------------------------------------------------------------------------
-// Graph first:
-//   UV_back = saturate(UnitToUV - Dt * PrevVelocity)   // wire to Sample UV
-//   SampleVel  = SamplePrevious Velocity  @ UV_back
-//   SampleDens = SamplePrevious Density   @ UV_back
+Every solver Custom:
+  Virtual Include:
+    1) /Project/ScreenFluid/StageCommon.ush
+    2) /Project/ScreenFluid/StageXXXX.ush
+
+Map Get/Set StackContext names: Velocity, Density, Pressure, Divergence
+
+================================================================================
+1 Inject
+================================================================================
+SF_Inject(UnitToUV, ClickUV, InjectForce, DensitySrc, Radius, InjectPulse, Dt, PrevVelocity, PrevDensity, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+UnitToUV=ExecutionIndexToUnit.xy
+ClickUV=User.ClickUV  InjectForce=User.InjectForce
+DensitySrc=User.DensitySrc  Radius=User.ClickRadius
+InjectPulse=User.InjectPulse  Dt=User.Dt
+Prev* = StackContext.*  →  Out* = StackContext.*
+
+================================================================================
+2 Advect  — MUST match this call (8 pins)
+================================================================================
+// Graph: UV_back = Saturate(UnitToUV - Dt * StackContext.Velocity)
+//        SampleVel  = SamplePrevious Velocity  @ UV_back
+//        SampleDens = SamplePrevious Density   @ UV_back
 SF_Advect(SampleVel, SampleDens, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
 
---------------------------------------------------------------------------------
-Diffuse  (Stage NumIterations = 20)
-Include: /Project/ScreenFluid/StageDiffuse.ush
---------------------------------------------------------------------------------
+================================================================================
+3 Diffuse  (NumIterations=20) — MUST match this call (20 pins)
+================================================================================
 SF_Diffuse(CenterVel, VelL, VelR, VelD, VelU, CenterDens, DensL, DensR, DensD, DensU, Dt, Viscosity, Diffusion, GridN, PrevPressure, PrevDivergence, OutVelocity, OutDensity, OutPressure, OutDivergence);
 
-CenterVel/Dens = field entering diffuse (after Advect), fixed as x0
-Vel*/Dens*     = SamplePrevious neighbors (Jacobi iterate)
-
---------------------------------------------------------------------------------
-Divergence
---------------------------------------------------------------------------------
-SF_Divergence(PrevVelocity, VelL, VelR, VelD, VelU, PrevDensity, PrevPressure, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
-
---------------------------------------------------------------------------------
-Pressure  (Stage NumIterations = 20)
---------------------------------------------------------------------------------
-SF_Pressure(PressL, PressR, PressD, PressU, PrevDivergence, PrevVelocity, PrevDensity, OutPressure, OutVelocity, OutDensity, OutDivergence);
-
---------------------------------------------------------------------------------
-Project
---------------------------------------------------------------------------------
-SF_Project(PrevVelocity, PressL, PressR, PressD, PressU, PrevDensity, PrevPressure, PrevDivergence, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
-
---------------------------------------------------------------------------------
-ExportRT
---------------------------------------------------------------------------------
-SF_ExportRT(PrevVelocity, PrevDensity, OutColor);
+CenterVel=StackContext.Velocity  CenterDens=StackContext.Density
+Vel*/Dens* = SamplePrevious neighbors
+Dt/Viscosity/Diffusion/GridN = User.*
 
 ================================================================================
-After editing .ush: Apply Scratch on each module + Compile Niagara System.
-Niagara does NOT always auto-reload virtual includes.
+4 Divergence — MUST match this call (12 pins)
+================================================================================
+SF_Divergence(PrevVelocity, VelL, VelR, VelD, VelU, PrevDensity, PrevPressure, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+PrevVelocity=StackContext.Velocity  Vel*=neighbor Velocity
+PrevDensity=StackContext.Density  PrevPressure=StackContext.Pressure (ignored)
+GridN=User.GridN
+(OutPressure forced to 0 inside kernel)
+
+================================================================================
+5 Pressure  (NumIterations=20)
+================================================================================
+// Stam: p = (Σp + div)/4  when div = -0.5/N*((uR-uL)+(vU-vD))
+// (NOT (Σp - div)/4 — that is for positive-divergence convention)
+SF_Pressure(PressL, PressR, PressD, PressU, PrevDivergence, PrevVelocity, PrevDensity, OutPressure, OutVelocity, OutDensity, OutDivergence);
+
+Press*=SamplePrevious Pressure
+PrevDivergence=StackContext.Divergence (fixed rhs)
+
+================================================================================
+6 Project — MUST match this call
+================================================================================
+SF_Project(PrevVelocity, PressL, PressR, PressD, PressU, PrevDensity, PrevPressure, PrevDivergence, GridN, OutVelocity, OutDensity, OutPressure, OutDivergence);
+
+PrevVelocity=StackContext.Velocity
+Press*=SamplePrevious Pressure neighbors
+GridN=User.GridN
+
+
+================================================================================
+ExportRT (optional 7th stage for PP)
+================================================================================
+SF_ExportRT(PrevVelocity, PrevDensity, OutColor);
+Iteration=FluidGrid; SetRenderTargetValue → Target DI
+
+================================================================================
+Apply Scratch + Compile NS after any .ush change.
 ================================================================================

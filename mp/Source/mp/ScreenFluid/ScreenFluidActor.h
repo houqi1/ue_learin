@@ -54,12 +54,22 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Materials")
 	TObjectPtr<UMaterialInterface> DistortMaterial;
 
-	// --- Inject ---
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject")
-	float ClickStrength = 8.0f;
-
+	// --- Inject (Stam interact → u0/v0/dens0; only while pointer moves) ---
+	/** Brush radius in UV. HTML demo ~ domain/20 → ~0.05 on unit square. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.001"))
-	float ClickRadius = 0.08f;
+	float ClickRadius = 0.05f;
+
+	/**
+	 * Stam-style velocity source multiplier (HTML vMult=50).
+	 * InjectForce = (dx_cells, dy_cells) * VelocityMult  written to User.InjectForce;
+	 * add_source does u += dt * InjectForce * brush.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
+	float VelocityMult = 50.f;
+
+	/** Density source amount (HTML dye strength; single channel). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
+	float DensityAmount = 100.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject")
 	bool bRespondToLeftMouse = true;
@@ -73,21 +83,26 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject")
 	bool bForceShowMouseCursor = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject")
-	float PulseDecayPerSecond = 4.0f;
-
 	/**
-	 * Minimum mouse move in screen UV per frame to count as "moving".
-	 * Below this: no inject (InjectPulse=0).
+	 * Minimum |delta UV| to count as moving (else InjectPulse=0, no force).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
-	float MinMoveUV = 0.0008f;
+	float MinMoveUV = 0.0005f;
 
-	/**
-	 * Scales |delta UV| into InjectPulse / strength (pulse ≈ saturate(move * MoveStrengthScale)).
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject", meta = (ClampMin = "0.0"))
-	float MoveStrengthScale = 80.f;
+	// --- Stam solver params (pushed to Niagara User.*) ---
+	/** Time step. Classic demo often 0.1; realtime try 1/60. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "0.0001"))
+	float SimDt = 0.0166667f;
+
+	/** Must match Grid2D SetNumCells / RT size. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "16", ClampMax = "2048"))
+	int32 GridN = 512;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "0.0"))
+	float Viscosity = 0.0001f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "0.0"))
+	float Diffusion = 0.0001f;
 
 	// --- Display ---
 	/** UV warp scale. Temporarily large so solid/non-zero RT is obvious in PIE. */
@@ -146,8 +161,9 @@ private:
 	bool bSpaceWasDown = false;
 	float InjectPulse = 0.f;
 	FVector2D PendingInjectUV = FVector2D(0.5f, 0.5f);
-	/** Unit direction of mouse motion in UV (this frame); zero when not moving. */
-	FVector2D PendingInjectDir = FVector2D::ZeroVector;
+	/** Stam u0/v0 for this frame (grid-cell delta * VelocityMult); zero if still. */
+	FVector2D PendingInjectForce = FVector2D::ZeroVector;
+	float PendingDensitySrc = 0.f;
 	FVector2D LastMouseUV = FVector2D(0.5f, 0.5f);
 	/** Previous frame UV while button held (for delta). */
 	FVector2D PrevHeldMouseUV = FVector2D(0.5f, 0.5f);

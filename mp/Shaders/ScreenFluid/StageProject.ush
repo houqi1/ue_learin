@@ -1,9 +1,10 @@
-// Stam Stable Fluids — PROJECT part 3: velocity correction
-//   u ← u - 0.5*N*(p_{i+1}-p_{i-1})
-//   v ← v - 0.5*N*(p_{j+1}-p_{j-1})
+// Kernel 6/6 — PROJECT / gradient subtract
+//   u -= 0.5*N*(pR-pL) ;  v -= 0.5*N*(pU-pD)
 //
-// Virtual Include: StageCommon.ush then StageProject.ush
-// Body: SF_Project(...)
+// Signature matches Niagara Custom HLSL call in the project:
+// SF_Project(PrevVelocity, PressL, PressR, PressD, PressU,
+//            PrevDensity, PrevPressure, PrevDivergence, GridN,
+//            OutVelocity, OutDensity, OutPressure, OutDivergence);
 
 void SF_Project(
 	float2 PrevVelocity,

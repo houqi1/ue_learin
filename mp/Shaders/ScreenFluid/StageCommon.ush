@@ -1,22 +1,11 @@
-// Shared helpers for Stam Stable Fluids (SIGGRAPH 1999) discrete form.
-// Domain is the unit square; grid resolution N means cell size h = 1/N.
-// Velocity is stored in UV-units per second (d(uv)/dt), uv ∈ [0,1]².
-//
-// Discrete ops follow Stam "Real-Time Fluid Dynamics for Games" (same math as Stable Fluids),
-// which gives the standard index-space scaling with N:
-//   div = -0.5/N * ((uR-uL)+(vU-vD))
-//   p   = (pL+pR+pD+pU - div) / 4
-//   u  -= 0.5*N * (pR-pL),  v -= 0.5*N * (pU-pD)
-//   implicit diffuse: a = dt * k * N * N;  x = (x0 + a*sum_nb) / (1+4a)
-//
+// Stam Stable Fluids — shared discrete ops (6-kernel GPU layout)
+// Reference: Jos Stam SIGGRAPH 1999 / GDC discrete form
 // Path: /Project/ScreenFluid/StageCommon.ush
+// FORCE_RELOAD_STAMP: 2026-07-29-void-cast-fix
 
 #ifndef SF_STABLE_FLUIDS_COMMON
 #define SF_STABLE_FLUIDS_COMMON
 
-float SF_Sqr(float x) { return x * x; }
-
-// Soft disc weight in UV space [0,1], radius in UV units.
 float SF_SplatWeight(float2 UnitUV, float2 ClickUV, float RadiusUV)
 {
 	float r = length(UnitUV - ClickUV);
@@ -25,36 +14,52 @@ float SF_SplatWeight(float2 UnitUV, float2 ClickUV, float RadiusUV)
 	return t * t;
 }
 
-// Implicit diffusion Jacobi step (one iteration of Stable Fluids linear solve).
-// a = dt * coeff * N * N,  coeff = viscosity (velocity) or diffusion (density).
-float SF_DiffuseScalarJacobi(float Center0, float L, float R, float D, float U, float a)
+float2 SF_UnitToIndex(float2 UnitUV, float N)
 {
-	float denom = 1.0 + 4.0 * a;
-	return (Center0 + a * (L + R + D + U)) / max(denom, 1e-8);
+	return UnitUV * max(N, 1.0) - 0.5;
 }
 
-float2 SF_DiffuseVecJacobi(float2 Center0, float2 L, float2 R, float2 D, float2 U, float a)
+// Wall: zero normal velocity on domain edge (simple set_bnd)
+float2 SF_SetBndVelocity(float2 UnitUV, float N, float2 vel)
+{
+	float2 idx = SF_UnitToIndex(UnitUV, N);
+	float n = max(N, 1.0);
+	float2 v = vel;
+	if (idx.x < 0.5 || idx.x > n - 1.5) v.x = 0.0;
+	if (idx.y < 0.5 || idx.y > n - 1.5) v.y = 0.0;
+	return v;
+}
+
+// lin_solve step: a = dt*k*N^2 ; x = (x0 + a*sum_nb)/(1+4a)
+float SF_LinSolveScalar(float Center0, float L, float R, float D, float U, float a)
+{
+	return (Center0 + a * (L + R + D + U)) / max(1.0 + 4.0 * a, 1e-8);
+}
+
+float2 SF_LinSolveVec(float2 Center0, float2 L, float2 R, float2 D, float2 U, float a)
 {
 	return float2(
-		SF_DiffuseScalarJacobi(Center0.x, L.x, R.x, D.x, U.x, a),
-		SF_DiffuseScalarJacobi(Center0.y, L.y, R.y, D.y, U.y, a));
+		SF_LinSolveScalar(Center0.x, L.x, R.x, D.x, U.x, a),
+		SF_LinSolveScalar(Center0.y, L.y, R.y, D.y, U.y, a));
 }
 
-// Stam project: divergence of velocity (GDC discrete form).
-// Neighbors are ±1 cell; N = num cells along one axis.
+// div = -0.5/N * ((uR-uL)+(vU-vD))
 float SF_DivergenceStam(float2 VelL, float2 VelR, float2 VelD, float2 VelU, float N)
 {
 	float n = max(N, 1.0);
 	return -0.5 * ((VelR.x - VelL.x) + (VelU.y - VelD.y)) / n;
 }
 
-// One Gauss-Seidel/Jacobi iteration for pressure Poisson: ∇²p = div.
+// Stam lin_solve(p, div, a=1, c=4) with div already containing the leading minus:
+//   div = -0.5/N * ((uR-uL)+(vU-vD))
+//   p   = (div + pL+pR+pD+pU) / 4
+// Do NOT use (Σp - div)/4 here — that is for positive divergence only.
 float SF_PressureJacobi(float PressL, float PressR, float PressD, float PressU, float Div)
 {
-	return (PressL + PressR + PressD + PressU - Div) * 0.25;
+	return (PressL + PressR + PressD + PressU + Div) * 0.25;
 }
 
-// Subtract pressure gradient (GDC discrete form).
+// u -= 0.5*N*(pR-pL), v -= 0.5*N*(pU-pD)
 float2 SF_ProjectVelocity(float2 Vel, float PressL, float PressR, float PressD, float PressU, float N)
 {
 	float n = max(N, 1.0);
@@ -62,10 +67,9 @@ float2 SF_ProjectVelocity(float2 Vel, float PressL, float PressR, float PressD, 
 	return Vel - grad;
 }
 
-// Semi-Lagrangian backtrace in UV space: x* = x - dt * u(x)
-float2 SF_BacktraceUV(float2 UnitUV, float2 VelocityUVPerSec, float Dt)
+float2 SF_BacktraceUV(float2 UnitUV, float2 Velocity, float Dt)
 {
-	return saturate(UnitUV - Dt * VelocityUVPerSec);
+	return saturate(UnitUV - Dt * Velocity);
 }
 
 #endif

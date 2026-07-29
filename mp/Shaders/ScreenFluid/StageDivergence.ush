@@ -1,9 +1,12 @@
-// Stam Stable Fluids — PROJECT part 1: divergence
-//   div = -0.5/N * ((u_{i+1}-u_{i-1}) + (v_{j+1}-v_{j-1}))
-// Stored for pressure Poisson rhs (GDC / Stable Fluids discrete form).
+// Kernel 4/6 — DIVERGENCE (+ zero pressure for Poisson start)
+//   div = -0.5/N * ((uR-uL)+(vU-vD)) ;  p = 0
+// FORCE_RELOAD_STAMP: 2026-07-29-void-cast-fix
 //
-// Virtual Include: StageCommon.ush then StageDivergence.ush
-// Body: SF_Divergence(...)
+// Signature matches Niagara Custom HLSL call in the project (12 args):
+// SF_Divergence(PrevVelocity, VelL, VelR, VelD, VelU,
+//               PrevDensity, PrevPressure, GridN,
+//               OutVelocity, OutDensity, OutPressure, OutDivergence);
+// PrevPressure is accepted for pin compatibility (ignored; OutPressure forced to 0).
 
 void SF_Divergence(
 	float2 PrevVelocity,
@@ -19,8 +22,10 @@ void SF_Divergence(
 	out float OutPressure,
 	out float OutDivergence)
 {
+	// PrevPressure pin kept only for Niagara call compatibility; Stam zeros p here.
+	// (Do not use C-style (void)x — invalid in HLSL.)
 	OutDivergence = SF_DivergenceStam(VelL, VelR, VelD, VelU, GridN);
+	OutPressure = 0.0 + 0.0 * PrevPressure;
 	OutVelocity = PrevVelocity;
 	OutDensity = PrevDensity;
-	OutPressure = PrevPressure; // p will be solved next; keep or zero in graph if desired
 }

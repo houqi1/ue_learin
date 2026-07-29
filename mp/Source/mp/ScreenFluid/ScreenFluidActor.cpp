@@ -21,14 +21,22 @@ namespace SFUser
 {
 	static const FName ClickUV(TEXT("User.ClickUV"));
 	static const FName ClickUVShort(TEXT("ClickUV"));
-	static const FName ClickStrength(TEXT("User.ClickStrength"));
-	static const FName ClickStrengthShort(TEXT("ClickStrength"));
 	static const FName ClickRadius(TEXT("User.ClickRadius"));
 	static const FName ClickRadiusShort(TEXT("ClickRadius"));
 	static const FName InjectPulse(TEXT("User.InjectPulse"));
 	static const FName InjectPulseShort(TEXT("InjectPulse"));
-	static const FName InjectDir(TEXT("User.InjectDir"));
-	static const FName InjectDirShort(TEXT("InjectDir"));
+	static const FName InjectForce(TEXT("User.InjectForce"));
+	static const FName InjectForceShort(TEXT("InjectForce"));
+	static const FName DensitySrc(TEXT("User.DensitySrc"));
+	static const FName DensitySrcShort(TEXT("DensitySrc"));
+	static const FName Dt(TEXT("User.Dt"));
+	static const FName DtShort(TEXT("Dt"));
+	static const FName GridN(TEXT("User.GridN"));
+	static const FName GridNShort(TEXT("GridN"));
+	static const FName Viscosity(TEXT("User.Viscosity"));
+	static const FName ViscosityShort(TEXT("Viscosity"));
+	static const FName Diffusion(TEXT("User.Diffusion"));
+	static const FName DiffusionShort(TEXT("Diffusion"));
 	static const FName VelocityRT(TEXT("User.VelocityRT"));
 	static const FName VelocityRTShort(TEXT("VelocityRT"));
 }
@@ -116,11 +124,6 @@ void AScreenFluidActor::Tick(float DeltaSeconds)
 
 	TickInput();
 
-	if (InjectPulse > 0.f)
-	{
-		InjectPulse = FMath::Max(0.f, InjectPulse - DeltaSeconds * PulseDecayPerSecond);
-	}
-
 	// Keep Grid2D sim alive. If GPU script failed (coord uninitialized etc.),
 	// IsActive stays false no matter how often we Activate — log that clearly.
 	if (NiagaraFluid && FluidSystem)
@@ -197,26 +200,25 @@ void AScreenFluidActor::Tick(float DeltaSeconds)
 
 void AScreenFluidActor::InjectAtScreenUV(FVector2D ScreenUV, float StrengthOverride, float RadiusOverride)
 {
-	// Manual inject: place brush at UV with a default +X stroke direction (for BP/debug).
+	// Manual inject: place brush at UV with +X force (BP/debug).
 	PendingInjectUV.X = FMath::Clamp(ScreenUV.X, 0.f, 1.f);
 	PendingInjectUV.Y = FMath::Clamp(ScreenUV.Y, 0.f, 1.f);
-	PendingInjectDir = FVector2D(1.f, 0.f);
+	const float Mult = StrengthOverride >= 0.f ? StrengthOverride : VelocityMult;
+	PendingInjectForce = FVector2D(Mult, 0.f);
+	PendingDensitySrc = DensityAmount;
 	InjectPulse = 1.f;
-	if (StrengthOverride >= 0.f)
-	{
-		ClickStrength = StrengthOverride;
-	}
 	if (RadiusOverride >= 0.f)
 	{
 		ClickRadius = RadiusOverride;
 	}
-	UE_LOG(LogScreenFluid, Log, TEXT("Inject UV=(%.3f,%.3f) dir=(%.2f,%.2f) strength=%.2f"),
-		PendingInjectUV.X, PendingInjectUV.Y, PendingInjectDir.X, PendingInjectDir.Y, ClickStrength);
+	UE_LOG(LogScreenFluid, Log, TEXT("Inject UV=(%.3f,%.3f) force=(%.2f,%.2f) dens=%.1f"),
+		PendingInjectUV.X, PendingInjectUV.Y, PendingInjectForce.X, PendingInjectForce.Y, PendingDensitySrc);
 }
 
 void AScreenFluidActor::EnsureVelocityRT()
 {
-	const int32 Want = FMath::Clamp(RuntimeRTSize, 64, 2048);
+	// Prefer solver GridN so RT / SetNumCells / User.GridN stay consistent.
+	const int32 Want = FMath::Clamp(GridN > 0 ? GridN : RuntimeRTSize, 64, 2048);
 
 	if (!VelocityRT)
 	{
@@ -438,21 +440,27 @@ void AScreenFluidActor::PushNiagaraParams()
 		return;
 	}
 
-	const float Strength = ClickStrength * InjectPulse;
+	const float N = static_cast<float>(FMath::Max(GridN, 16));
 	NiagaraFluid->SetVariableVec2(SFUser::ClickUV, PendingInjectUV);
 	NiagaraFluid->SetVariableVec2(SFUser::ClickUVShort, PendingInjectUV);
-	NiagaraFluid->SetVariableVec2(SFUser::InjectDir, PendingInjectDir);
-	NiagaraFluid->SetVariableVec2(SFUser::InjectDirShort, PendingInjectDir);
-	NiagaraFluid->SetVariableFloat(SFUser::ClickStrength, Strength);
-	NiagaraFluid->SetVariableFloat(SFUser::ClickStrengthShort, Strength);
+	NiagaraFluid->SetVariableVec2(SFUser::InjectForce, PendingInjectForce);
+	NiagaraFluid->SetVariableVec2(SFUser::InjectForceShort, PendingInjectForce);
+	NiagaraFluid->SetVariableFloat(SFUser::DensitySrc, PendingDensitySrc);
+	NiagaraFluid->SetVariableFloat(SFUser::DensitySrcShort, PendingDensitySrc);
 	NiagaraFluid->SetVariableFloat(SFUser::ClickRadius, ClickRadius);
 	NiagaraFluid->SetVariableFloat(SFUser::ClickRadiusShort, ClickRadius);
 	NiagaraFluid->SetVariableFloat(SFUser::InjectPulse, InjectPulse);
 	NiagaraFluid->SetVariableFloat(SFUser::InjectPulseShort, InjectPulse);
+	NiagaraFluid->SetVariableFloat(SFUser::Dt, SimDt);
+	NiagaraFluid->SetVariableFloat(SFUser::DtShort, SimDt);
+	NiagaraFluid->SetVariableFloat(SFUser::GridN, N);
+	NiagaraFluid->SetVariableFloat(SFUser::GridNShort, N);
+	NiagaraFluid->SetVariableFloat(SFUser::Viscosity, Viscosity);
+	NiagaraFluid->SetVariableFloat(SFUser::ViscosityShort, Viscosity);
+	NiagaraFluid->SetVariableFloat(SFUser::Diffusion, Diffusion);
+	NiagaraFluid->SetVariableFloat(SFUser::DiffusionShort, Diffusion);
 	if (VelocityRT)
 	{
-		// Both names: DI "Render Target User Parameter" binds to User.VelocityRT;
-		// some stores resolve the short name only.
 		NiagaraFluid->SetVariableTextureRenderTarget(SFUser::VelocityRT, VelocityRT);
 		NiagaraFluid->SetVariableTextureRenderTarget(SFUser::VelocityRTShort, VelocityRT);
 	}
@@ -477,15 +485,14 @@ void AScreenFluidActor::VerifyNiagaraClickParams(bool bForceLog)
 
 	const FVector2D ExpectedUV = PendingInjectUV;
 	const float ExpectedPulse = InjectPulse;
-	const float ExpectedStrength = ClickStrength * InjectPulse;
+	const FVector2D ExpectedForce = PendingInjectForce;
 
-	// Prefer User.X names (matches NS Parameters → User); fall back to short names.
 	bool bUvValid = false;
 	bool bPulseValid = false;
-	bool bStrValid = false;
+	bool bForceValid = false;
 	FVector2D ReadUV = FVector2D::ZeroVector;
 	float ReadPulse = 0.f;
-	float ReadStrength = 0.f;
+	FVector2D ReadForce = FVector2D::ZeroVector;
 
 	ReadUV = NiagaraFluid->GetVariableVec2(SFUser::ClickUV, bUvValid);
 	if (!bUvValid)
@@ -497,16 +504,15 @@ void AScreenFluidActor::VerifyNiagaraClickParams(bool bForceLog)
 	{
 		ReadPulse = NiagaraFluid->GetVariableFloat(SFUser::InjectPulseShort, bPulseValid);
 	}
-	ReadStrength = NiagaraFluid->GetVariableFloat(SFUser::ClickStrength, bStrValid);
-	if (!bStrValid)
+	ReadForce = NiagaraFluid->GetVariableVec2(SFUser::InjectForce, bForceValid);
+	if (!bForceValid)
 	{
-		ReadStrength = NiagaraFluid->GetVariableFloat(SFUser::ClickStrengthShort, bStrValid);
+		ReadForce = NiagaraFluid->GetVariableVec2(SFUser::InjectForceShort, bForceValid);
 	}
 
 	const float UvErr = FVector2D::Distance(ReadUV, ExpectedUV);
 	const bool bUvMatch = bUvValid && UvErr < 1.e-3f;
 	const bool bPulseMatch = bPulseValid && FMath::IsNearlyEqual(ReadPulse, ExpectedPulse, 1.e-3f);
-	const bool bStrMatch = bStrValid && FMath::IsNearlyEqual(ReadStrength, ExpectedStrength, 1.e-2f);
 	const bool bAllOk = bUvMatch && bPulseMatch;
 
 	if (!bForceLog && bAllOk && !bLogInput)
@@ -517,20 +523,18 @@ void AScreenFluidActor::VerifyNiagaraClickParams(bool bForceLog)
 	if (bAllOk)
 	{
 		UE_LOG(LogScreenFluid, Warning,
-			TEXT("ClickUV check PASS | wrote UV=(%.4f,%.4f) pulse=%.3f | read UV=(%.4f,%.4f) pulse=%.3f strength=%.2f | active=%d nameOk(UV=%d pulse=%d)"),
-			ExpectedUV.X, ExpectedUV.Y, ExpectedPulse,
-			ReadUV.X, ReadUV.Y, ReadPulse, ReadStrength,
-			NiagaraFluid->IsActive() ? 1 : 0,
-			bUvValid ? 1 : 0, bPulseValid ? 1 : 0);
+			TEXT("ClickUV check PASS | UV=(%.4f,%.4f) pulse=%.3f force=(%.2f,%.2f) | read UV=(%.4f,%.4f) forceOk=%d | active=%d"),
+			ExpectedUV.X, ExpectedUV.Y, ExpectedPulse, ExpectedForce.X, ExpectedForce.Y,
+			ReadUV.X, ReadUV.Y, bForceValid ? 1 : 0,
+			NiagaraFluid->IsActive() ? 1 : 0);
 	}
 	else
 	{
 		UE_LOG(LogScreenFluid, Error,
-			TEXT("ClickUV check FAIL | wrote UV=(%.4f,%.4f) pulse=%.3f | read UV valid=%d (%.4f,%.4f) err=%.5f | pulse valid=%d (%.3f) | strength valid=%d (%.2f) | active=%d | NS missing User.ClickUV?"),
+			TEXT("ClickUV check FAIL | wrote UV=(%.4f,%.4f) pulse=%.3f | read UV valid=%d (%.4f,%.4f) err=%.5f | pulse valid=%d (%.3f) | active=%d"),
 			ExpectedUV.X, ExpectedUV.Y, ExpectedPulse,
 			bUvValid ? 1 : 0, ReadUV.X, ReadUV.Y, UvErr,
 			bPulseValid ? 1 : 0, ReadPulse,
-			bStrValid ? 1 : 0, ReadStrength,
 			NiagaraFluid->IsActive() ? 1 : 0);
 	}
 }
@@ -550,10 +554,11 @@ void AScreenFluidActor::TickInput()
 		LastMouseUV = UV;
 	}
 
-	// Default: no inject this frame (stationary or not held).
-	bool bWantInject = false;
-	FVector2D MoveDir = FVector2D::ZeroVector;
-	float MovePulse = 0.f;
+	// Stam HTML interact: only while dragging; u0 = dx_cells * vMult, dens0 = amount.
+	// Default: clear sources this frame (clearInputs equivalent when not moving).
+	PendingInjectForce = FVector2D::ZeroVector;
+	PendingDensitySrc = 0.f;
+	InjectPulse = 0.f;
 
 	const bool bLeftDown = bRespondToLeftMouse && PC->IsInputKeyDown(EKeys::LeftMouseButton);
 	const bool bSpaceDown = bRespondToSpaceBar && PC->IsInputKeyDown(EKeys::SpaceBar);
@@ -563,16 +568,18 @@ void AScreenFluidActor::TickInput()
 	{
 		PendingInjectUV = UV;
 
-		// Inject only when pointer moved this frame (not on hold-still).
 		if (bHasPrevHeldMouseUV)
 		{
-			const FVector2D Delta = UV - PrevHeldMouseUV;
-			const float MoveLen = Delta.Size();
-			if (MoveLen >= MinMoveUV)
+			const FVector2D DeltaUV = UV - PrevHeldMouseUV;
+			const float MoveLenUV = DeltaUV.Size();
+			if (MoveLenUV >= MinMoveUV)
 			{
-				MoveDir = Delta / MoveLen;
-				MovePulse = FMath::Clamp(MoveLen * MoveStrengthScale, 0.f, 1.f);
-				bWantInject = true;
+				// dx,dy in grid cells (HTML getMousePos maps to 1..N space)
+				const float N = static_cast<float>(FMath::Max(GridN, 16));
+				const FVector2D DeltaCells = DeltaUV * N;
+				PendingInjectForce = DeltaCells * VelocityMult;
+				PendingDensitySrc = DensityAmount;
+				InjectPulse = 1.f;
 			}
 		}
 
@@ -582,25 +589,6 @@ void AScreenFluidActor::TickInput()
 	else
 	{
 		bHasPrevHeldMouseUV = false;
-		PendingInjectDir = FVector2D::ZeroVector;
-	}
-
-	if (bWantInject)
-	{
-		PendingInjectDir = MoveDir;
-		InjectPulse = MovePulse;
-	}
-	else if (!bHeld)
-	{
-		// Release: clear stroke
-		PendingInjectDir = FVector2D::ZeroVector;
-		InjectPulse = 0.f;
-	}
-	else
-	{
-		// Held but not moving: do not inject
-		PendingInjectDir = FVector2D::ZeroVector;
-		InjectPulse = 0.f;
 	}
 
 	bMouseWasDown = bLeftDown;

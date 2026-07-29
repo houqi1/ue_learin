@@ -1,32 +1,13 @@
-// Stam Stable Fluids — DIFFUSE (implicit viscosity / density diffusion)
-// Solves (I - dt*k*∇²) x = x0 by Jacobi iteration (GPU-friendly form of Stam's
-// linear solve; CPU reference often uses Gauss-Seidel on the same system).
+// Kernel 3/6 — DIFFUSE (implicit viscosity + density diffusion)
+//   a = dt * k * N^2 ;  x = (x0 + a*sum_nb)/(1+4a)
+// STAGE NumIterations = 20
 //
-//   a = dt * k * N * N     (h = 1/N on unit square)
-//   x ← (x0 + a*(L+R+D+U)) / (1+4a)
-//
-// k = Viscosity for velocity, Diffusion for density.
-//
-// STAGE: set Num Iterations = 20 (Stam typically ~20 GS iterations).
-// Each stage iteration is one Jacobi sweep; neighbors must be Sample Previous
-// (or last write) so the linear system actually iterates.
-//
-// Pins Vel* / Dens* = ±1 cell neighbors of CURRENT unknown field being solved.
-// Center0 = right-hand side x0 (field BEFORE this diffuse solve), usually
-// SamplePrevious / stack value at start of diffuse (fixed during all iters).
-//
-// For correct multi-iter diffuse on GPU:
-//   - First iteration: Center0 = field after advect; neighbors from that buffer
-//   - Later iterations: Center0 still x0; neighbors from latest pressure-like buffer
-// Practical Niagara approach matching many ports:
-//   Center0 = Prev (from previous stage output, stable for first pass)
-//   Neighbors = SamplePrevious of same attribute (Jacobi uses old iterate)
-//   Stage NumIterations > 1 repeats the module (Jacobi sweeps)
-//
-// Virtual Include:
-//   1) /Project/ScreenFluid/StageCommon.ush
-//   2) /Project/ScreenFluid/StageDiffuse.ush
-// Body: SF_Diffuse(...)
+// Signature matches Niagara Custom HLSL call in the project (20 args):
+// SF_Diffuse(CenterVel, VelL, VelR, VelD, VelU,
+//            CenterDens, DensL, DensR, DensD, DensU,
+//            Dt, Viscosity, Diffusion, GridN,
+//            PrevPressure, PrevDivergence,
+//            OutVelocity, OutDensity, OutPressure, OutDivergence);
 
 void SF_Diffuse(
 	float2 CenterVel,
@@ -52,13 +33,11 @@ void SF_Diffuse(
 {
 	float dt = max(Dt, 0.0);
 	float n = max(GridN, 1.0);
-	float n2 = n * n;
+	float aVel = dt * max(Viscosity, 0.0) * n * n;
+	float aDens = dt * max(Diffusion, 0.0) * n * n;
 
-	float aVel = dt * max(Viscosity, 0.0) * n2;
-	float aDens = dt * max(Diffusion, 0.0) * n2;
-
-	OutVelocity = SF_DiffuseVecJacobi(CenterVel, VelL, VelR, VelD, VelU, aVel);
-	OutDensity = SF_DiffuseScalarJacobi(CenterDens, DensL, DensR, DensD, DensU, aDens);
+	OutVelocity = SF_LinSolveVec(CenterVel, VelL, VelR, VelD, VelU, aVel);
+	OutDensity = SF_LinSolveScalar(CenterDens, DensL, DensR, DensD, DensU, aDens);
 	OutPressure = PrevPressure;
 	OutDivergence = PrevDivergence;
 }

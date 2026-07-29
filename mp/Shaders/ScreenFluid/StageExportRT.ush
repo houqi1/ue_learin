@@ -1,11 +1,11 @@
-// Export Grid → RT (not part of Stam paper; required for screen PP).
-// RG = velocity (UV/s), B/A = density for visibility / mask.
+// Not a fluid kernel — write Grid → RT for post-process / debug.
+// Include: StageExportRT.ush only
 
 void SF_ExportRT(
 	float2 PrevVelocity,
 	float PrevDensity,
 	out float4 OutColor)
 {
-	float dens = PrevDensity;
-	OutColor = float4(PrevVelocity.x, PrevVelocity.y, dens, dens);
+	float d = max(PrevDensity, 0.0);
+	OutColor = float4(PrevVelocity.x, PrevVelocity.y, d, d);
 }
