@@ -1,0 +1,2 @@
+// OBSOLETE — Use StageAdvect.ush (6-kernel layout).
+#error "Use StageAdvect.ush — no separate AdvectVel"

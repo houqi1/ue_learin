@@ -1,0 +1,2 @@
+// OBSOLETE — Use StageDiffuse.ush (6-kernel layout).
+#error "Use StageDiffuse.ush — no separate DiffuseDens"

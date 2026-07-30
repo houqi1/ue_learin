@@ -1,0 +1,4 @@
+// OBSOLETE — Stable Fluids uses 6 kernels only.
+// Use StageDiffuse.ush (velocity + density in one Diffuse kernel).
+// Do not include this file.
+#error "Use StageDiffuse.ush — 6-kernel layout, no separate DiffuseVel"

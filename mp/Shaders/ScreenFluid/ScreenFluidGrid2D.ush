@@ -28,7 +28,7 @@ float4 SF_Sample4(Texture2D Tex, SamplerState S, float2 UV)
 	return Tex.SampleLevel(S, saturate(UV), 0);
 }
 
-// --- Inject: add radial + swirl force at ClickUV ---
+// --- Inject: add radial + swirl force at ClickUV (Mode=0 mouse brush) ---
 float4 SF_Inject(
 	Texture2D VelTex, SamplerState VelS,
 	float2 UV,
@@ -55,6 +55,100 @@ float4 SF_Inject(
 	vel += force;
 	dens = saturate(dens * 0.995 + w * DensityAmount);
 
+	float sp = length(vel);
+	if (sp > 2.0)
+	{
+		vel *= 2.0 / sp;
+	}
+	return float4(vel, 0.0, dens);
+}
+
+// --- Inject from Phoenix GBuffer (Mode=1): mask * reverse scene velocity ---
+// sceneVel / stencil come from Niagara SampleGBuffer / GBuffer DI (not SceneTexture nodes).
+// sampleUV: cell UV remapped for viewport if needed (ViewSize * BufferInvSize).
+// Returns RG=velocity, A=density (B unused) matching grid packing.
+float4 SF_InjectFromGBuffer(
+	float2 prevVel,
+	float prevDens,
+	float2 sceneVel,
+	float stencil,
+	float phoenixStencil,
+	float injectStrength,
+	float injectDensity,
+	float velocityToFluid,
+	float minSpeed,
+	float velocityYFlip,
+	float speedClamp)
+{
+	float mask = (abs(stencil - phoenixStencil) < 0.5) ? 1.0 : 0.0;
+
+	float2 v = sceneVel;
+	if (velocityYFlip > 0.5)
+	{
+		v.y = -v.y;
+	}
+
+	float spd = length(v);
+	float gate = (spd >= max(minSpeed, 0.0)) ? 1.0 : 0.0;
+
+	// Reverse of screen-space motion → fluid source force
+	float2 force = -v * velocityToFluid * injectStrength * mask * gate;
+	float2 vel = prevVel + force;
+
+	float densAdd = injectDensity * mask * gate * saturate(spd * 10.0);
+	float dens = saturate(prevDens * 0.995 + densAdd);
+
+	float clampSp = max(speedClamp, 1e-5);
+	float sp = length(vel);
+	if (sp > clampSp)
+	{
+		vel *= clampSp / sp;
+	}
+	return float4(vel, 0.0, dens);
+}
+
+// Unified inject selector (copy into Scratch Pad / SF_Inject Custom HLSL).
+// InjectMode: 0 = mouse SF_Inject brush, 1 = Phoenix GBuffer.
+float4 SF_InjectUnified(
+	Texture2D VelTex, SamplerState VelS,
+	float2 UV,
+	float InjectMode,
+	// Mode 0
+	float2 ClickUV,
+	float Strength,
+	float Radius,
+	float DensityAmountMouse,
+	float InjectPulse,
+	float2 InjectForce,
+	// Mode 1
+	float2 sceneVel,
+	float stencil,
+	float phoenixStencil,
+	float injectStrength,
+	float injectDensity,
+	float velocityToFluid,
+	float minSpeed,
+	float velocityYFlip)
+{
+	float4 prev = SF_Sample4(VelTex, VelS, UV);
+	if (InjectMode > 0.5)
+	{
+		return SF_InjectFromGBuffer(
+			prev.xy, prev.a,
+			sceneVel, stencil, phoenixStencil,
+			injectStrength, injectDensity, velocityToFluid,
+			minSpeed, velocityYFlip, 2.0);
+	}
+
+	// Mouse: optional directional force (InjectForce) blended with radial brush
+	float4 radial = SF_Inject(VelTex, VelS, UV, ClickUV, Strength * InjectPulse, Radius, DensityAmountMouse * InjectPulse);
+	float2 d = UV - ClickUV;
+	float r = length(d);
+	float rad = max(Radius, 1e-4);
+	float w = InjectPulse * saturate(1.0 - r / rad);
+	w = w * w;
+	float2 vel = radial.xy + InjectForce * w;
+	float dens = radial.a;
 	float sp = length(vel);
 	if (sp > 2.0)
 	{

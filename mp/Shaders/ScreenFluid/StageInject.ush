@@ -1,12 +1,20 @@
 // Kernel 1/6 — ADD FORCE / SOURCE (splat)
-//   u += dt * F ;  d += dt * S
 // Include: StageCommon.ush then StageInject.ush
+//
+// SF_Inject ………… original mouse splat ONLY (signature + body unchanged)
+// SF_InjectWithGBuffer … Mode0 calls SF_Inject; Mode1 = phoenix GBuffer
 
+// ---------------------------------------------------------------------------
+// ORIGINAL — do not change pin names or math
+// Pins: UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt,
+//       PrevVelocity, PrevDensity, PrevPressure, PrevDivergence
+// Out:  OutVelocity, OutDensity, OutPressure, OutDivergence
+// ---------------------------------------------------------------------------
 void SF_Inject(
 	float2 UnitToUV,
 	float2 ClickUV,
-	float2 InjectForce,
-	float DensitySrc,
+	float2 InjectDir,
+	float Strength,
 	float Radius,
 	float InjectPulse,
 	float Dt,
@@ -23,8 +31,67 @@ void SF_Inject(
 	float w = SF_SplatWeight(UnitToUV, ClickUV, Radius);
 	float gate = saturate(InjectPulse) * w;
 
-	OutVelocity = PrevVelocity + dt * InjectForce * gate;
-	OutDensity = PrevDensity + dt * max(DensitySrc, 0.0) * gate;
+	OutVelocity = PrevVelocity + dt * InjectDir * gate;
+	OutDensity = PrevDensity + dt * max(Strength, 0.0) * gate;
 	OutPressure = PrevPressure;
 	OutDivergence = PrevDivergence;
+}
+
+// ---------------------------------------------------------------------------
+// EXTENDED — only for Phoenix GBuffer path (optional; does not replace SF_Inject)
+// Extra pins: InjectMode, SceneVel, Stencil, PhoenixStencil,
+//             InjectStrength, VelocityToFluid, MinSpeedUV, VelocityYFlip
+// InjectMode <= 0.5 → identical to SF_Inject (above)
+// InjectMode >  0.5 → stencil mask * reverse SceneVel
+// ---------------------------------------------------------------------------
+void SF_InjectWithGBuffer(
+	float2 UnitToUV,
+	float2 ClickUV,
+	float2 InjectDir,
+	float Strength,
+	float Radius,
+	float InjectPulse,
+	float Dt,
+	float2 PrevVelocity,
+	float PrevDensity,
+	float PrevPressure,
+	float PrevDivergence,
+	float InjectMode,
+	float2 SceneVel,
+	float Stencil,
+	float PhoenixStencil,
+	float InjectStrength,
+	float VelocityToFluid,
+	float MinSpeedUV,
+	float VelocityYFlip,
+	out float2 OutVelocity,
+	out float OutDensity,
+	out float OutPressure,
+	out float OutDivergence)
+{
+	if (InjectMode > 0.5)
+	{
+		float dt = max(Dt, 0.0);
+		float mask = (abs(Stencil - PhoenixStencil) < 0.5) ? 1.0 : 0.0;
+		float2 v = SceneVel;
+		if (VelocityYFlip > 0.5)
+		{
+			v.y = -v.y;
+		}
+		float spd = length(v);
+		float gate = mask * ((spd >= max(MinSpeedUV, 0.0)) ? 1.0 : 0.0);
+		float2 force = -v * VelocityToFluid * InjectStrength;
+
+		OutVelocity = PrevVelocity + dt * force * gate;
+		OutDensity = PrevDensity + dt * max(Strength, 0.0) * gate;
+		OutPressure = PrevPressure;
+		OutDivergence = PrevDivergence;
+		return;
+	}
+
+	// Mode 0: exact original
+	SF_Inject(
+		UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt,
+		PrevVelocity, PrevDensity, PrevPressure, PrevDivergence,
+		OutVelocity, OutDensity, OutPressure, OutDivergence);
 }

@@ -1,25 +1,49 @@
 // Used by M_PP_ScreenFluidDistort MaterialExpressionCustom
 // Include path: /Project/ScreenFluidDistort.usf
 //
-// Field = sample of Velocity RT (RG=velocity, A=density)
+// Field = sample of Velocity RT from Niagara Export:
+//   RG = Stam velocity (can be large after cell*vMult inject)
+//   BA = density
 // Returns UV offset. Does NOT sample scene color (use SceneTexture node).
 
 #ifndef SCREEN_FLUID_DISTORT_USF
 #define SCREEN_FLUID_DISTORT_USF
 
-float2 ScreenFluidOffsetFromField(float4 Field, float MaxOffset, float Intensity)
+// Soft-map arbitrary velocity into roughly [-1,1]^2 so MaxOffset is usable.
+// Without this, Stam-scale |v| >> 1 makes UV+offset leave the screen → no visible warp.
+float2 ScreenFluidSoftVelocity(float2 Vel)
+{
+	float speed = length(Vel);
+	// v / (1+|v|) keeps direction, bounds magnitude to < 1
+	return Vel / (1.0 + speed);
+}
+
+float ScreenFluidFieldMask(float4 Field)
 {
 	float2 Vel = Field.rg;
-	// If Export leaves A=0, still warp from velocity length (solid red RG works).
-	float Mask = saturate(max(Field.a, length(Vel) * 4.0));
-	return Vel * MaxOffset * Mask * Intensity;
+	float dens = max(Field.a, Field.b);
+	float speed = length(Vel);
+	// Density from HTML-style inject is often O(1..100); scale down.
+	// Also allow pure-velocity fields (A=0) via speed.
+	float mDens = saturate(dens * 0.02);
+	float mVel = saturate(speed * 0.15);
+	return saturate(max(mDens, mVel));
+}
+
+float2 ScreenFluidOffsetFromField(float4 Field, float MaxOffset, float Intensity)
+{
+	float2 soft = ScreenFluidSoftVelocity(Field.rg);
+	float mask = ScreenFluidFieldMask(Field);
+	// Extra *2 so moderate MaxOffset (0.05~0.15) is still readable
+	return soft * MaxOffset * mask * Intensity * 2.0;
 }
 
 float3 ScreenFluidDebugColor(float4 Field)
 {
-	float2 Vel = Field.rg;
-	float Mask = saturate(max(Field.a, length(Vel) * 4.0));
-	return float3(Vel * 0.5 + 0.5, Mask);
+	float2 soft = ScreenFluidSoftVelocity(Field.rg) * 0.5 + 0.5;
+	float mask = ScreenFluidFieldMask(Field);
+	// Show velocity in RG, density influence in B
+	return float3(soft.x, soft.y, mask);
 }
 
 #endif
