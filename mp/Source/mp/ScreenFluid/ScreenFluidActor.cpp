@@ -64,6 +64,14 @@ namespace SFUser
 	static const FName BehindDirShort(TEXT("BehindDir"));
 	static const FName BehindStrength(TEXT("User.BehindStrength"));
 	static const FName BehindStrengthShort(TEXT("BehindStrength"));
+	static const FName ViewTowardCamera(TEXT("User.ViewTowardCamera"));
+	static const FName ViewTowardCameraShort(TEXT("ViewTowardCamera"));
+	static const FName FresnelPower(TEXT("User.FresnelPower"));
+	static const FName FresnelPowerShort(TEXT("FresnelPower"));
+	static const FName FresnelWeight(TEXT("User.FresnelWeight"));
+	static const FName FresnelWeightShort(TEXT("FresnelWeight"));
+	static const FName FresnelInvert(TEXT("User.FresnelInvert"));
+	static const FName FresnelInvertShort(TEXT("FresnelInvert"));
 }
 
 namespace SFMat
@@ -485,6 +493,16 @@ void AScreenFluidActor::SetNiagaraVec2(FName UserName, FName ShortName, FVector2
 	NiagaraFluid->SetVariableVec2(ShortName, Value);
 }
 
+void AScreenFluidActor::SetNiagaraVec3(FName UserName, FName ShortName, FVector Value)
+{
+	if (!NiagaraFluid)
+	{
+		return;
+	}
+	NiagaraFluid->SetVariableVec3(UserName, Value);
+	NiagaraFluid->SetVariableVec3(ShortName, Value);
+}
+
 void AScreenFluidActor::PushNiagaraParams()
 {
 	if (!NiagaraFluid || !NiagaraFluid->GetAsset())
@@ -505,6 +523,10 @@ void AScreenFluidActor::PushNiagaraParams()
 	SetNiagaraFloat(SFUser::VelocityYFlip, SFUser::VelocityYFlipShort, bVelocityYFlip ? 1.f : 0.f);
 	SetNiagaraVec2(SFUser::BehindDir, SFUser::BehindDirShort, PendingBehindDirUV);
 	SetNiagaraFloat(SFUser::BehindStrength, SFUser::BehindStrengthShort, BehindStrength);
+	SetNiagaraVec3(SFUser::ViewTowardCamera, SFUser::ViewTowardCameraShort, PendingViewTowardCamera);
+	SetNiagaraFloat(SFUser::FresnelPower, SFUser::FresnelPowerShort, FresnelPower);
+	SetNiagaraFloat(SFUser::FresnelWeight, SFUser::FresnelWeightShort, FresnelWeight);
+	SetNiagaraFloat(SFUser::FresnelInvert, SFUser::FresnelInvertShort, bFresnelInvert ? 1.f : 0.f);
 
 	// Mouse brush params (Mode 0). SF_Inject uses InjectDir (+ Strength dye).
 	// Write InjectDir first (primary for current StageInject.ush), then InjectForce alias.
@@ -632,11 +654,12 @@ void AScreenFluidActor::TickInput()
 	PendingDensitySrc = 0.f;
 	InjectPulse = 0.f;
 
-	// Mode 1: GBuffer stencil + reverse MV on GPU; behind dir from pawn facing (CPU → User.BehindDir).
+	// Mode 1: GBuffer stencil + reverse MV on GPU; behind dir + Fresnel view from CPU.
 	if (InjectMode == 1)
 	{
 		PendingDensitySrc = DensityAmount;
 		UpdatePhoenixBehindDirUV();
+		UpdateViewTowardCamera();
 		bHasPrevHeldMouseUV = false;
 		bMouseWasDown = false;
 		bSpaceWasDown = false;
@@ -644,6 +667,7 @@ void AScreenFluidActor::TickInput()
 	}
 
 	PendingBehindDirUV = FVector2D::ZeroVector;
+	PendingViewTowardCamera = FVector::UpVector;
 
 	// Mode 0: ensure cursor/input mode if user switched InjectMode after BeginPlay
 	SetupPlayerInputHelpers();
@@ -767,6 +791,33 @@ void AScreenFluidActor::UpdatePhoenixBehindDirUV()
 	}
 
 	PendingBehindDirUV = Delta.GetSafeNormal();
+}
+
+void AScreenFluidActor::UpdateViewTowardCamera()
+{
+	// Approx direction from surface toward camera: -CameraForward (stable for top-down).
+	PendingViewTowardCamera = FVector::UpVector;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+	if (!PC)
+	{
+		return;
+	}
+
+	FVector CamLoc = FVector::ZeroVector;
+	FRotator CamRot = FRotator::ZeroRotator;
+	PC->GetPlayerViewPoint(CamLoc, CamRot);
+	const FVector TowardCam = -CamRot.Vector();
+	if (!TowardCam.IsNearlyZero())
+	{
+		PendingViewTowardCamera = TowardCam.GetSafeNormal();
+	}
 }
 
 bool AScreenFluidActor::GetMouseScreenUV(FVector2D& OutUV) const

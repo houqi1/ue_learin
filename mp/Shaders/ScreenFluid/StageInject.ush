@@ -41,12 +41,40 @@ void SF_Inject(
 // EXTENDED — only for Phoenix GBuffer path (optional; does not replace SF_Inject)
 // Extra pins: InjectMode, SceneVel, Stencil, PhoenixStencil,
 //             InjectStrength, VelocityToFluid, MinSpeedUV, VelocityYFlip,
-//             BehindDir (UV unit, toward phoenix back), BehindStrength
+//             BehindDir, BehindStrength,
+//             WorldNormal (GBuffer), ViewTowardCamera (CPU ≈ -CameraForward),
+//             FresnelPower, FresnelWeight, FresnelInvert
 // InjectMode <= 0.5 → identical to SF_Inject (above)
 // InjectMode >  0.5 → on body stencil:
-//   (1) reverse SceneVel when moving
-//   (2) + BehindDir * BehindStrength (orientation from pawn/BP, always)
+//   (1) reverse SceneVel when moving  (no Fresnel)
+//   (2) BehindDir * BehindStrength * Fresnel
+//   density * Fresnel
 // ---------------------------------------------------------------------------
+float SF_InjectFresnelScale(
+	float3 WorldNormal,
+	float3 ViewTowardCamera,
+	float FresnelPower,
+	float FresnelWeight,
+	float FresnelInvert)
+{
+	float nLen = length(WorldNormal);
+	float vLen = length(ViewTowardCamera);
+	// Missing normal/view → no attenuation (full strength)
+	if (nLen < 1e-5 || vLen < 1e-5)
+	{
+		return 1.0;
+	}
+	float3 N = WorldNormal / nLen;
+	float3 V = ViewTowardCamera / vLen;
+	float ndotv = saturate(dot(N, V));
+	float p = max(FresnelPower, 1e-3);
+	// Default: rim strong (grazing). Invert: face-on strong.
+	float F = (FresnelInvert > 0.5)
+		? pow(ndotv, p)
+		: pow(max(1.0 - ndotv, 0.0), p);
+	return lerp(1.0, saturate(F), saturate(FresnelWeight));
+}
+
 void SF_InjectWithGBuffer(
 	float2 UnitToUV,
 	float2 ClickUV,
@@ -69,6 +97,11 @@ void SF_InjectWithGBuffer(
 	float VelocityYFlip,
 	float2 BehindDir,
 	float BehindStrength,
+	float3 WorldNormal,
+	float3 ViewTowardCamera,
+	float FresnelPower,
+	float FresnelWeight,
+	float FresnelInvert,
 	out float2 OutVelocity,
 	out float OutDensity,
 	out float OutPressure,
@@ -78,8 +111,10 @@ void SF_InjectWithGBuffer(
 	{
 		float dt = max(Dt, 0.0);
 		float mask = (abs(Stencil - PhoenixStencil) < 0.5) ? 1.0 : 0.0;
+		float fresnel = SF_InjectFresnelScale(
+			WorldNormal, ViewTowardCamera, FresnelPower, FresnelWeight, FresnelInvert);
 
-		// (1) existing: reverse screen motion when |SceneVel| above deadzone
+		// (1) reverse screen motion when |SceneVel| above deadzone — no Fresnel
 		float2 v = SceneVel;
 		if (VelocityYFlip > 0.5)
 		{
@@ -89,15 +124,14 @@ void SF_InjectWithGBuffer(
 		float speedGate = (spd >= max(MinSpeedUV, 0.0)) ? 1.0 : 0.0;
 		float2 forceMV = -v * VelocityToFluid * InjectStrength * speedGate;
 
-		// (2) added: outward inject toward current phoenix back (CPU UV dir)
+		// (2) behind inject * Fresnel (density uses same scale)
 		float2 b = BehindDir;
 		float bLen = length(b);
 		float2 bDir = (bLen > 1e-6) ? (b / bLen) : float2(0.0, 0.0);
-		float2 forceBehind = bDir * max(BehindStrength, 0.0);
+		float2 forceBehind = bDir * max(BehindStrength, 0.0) * fresnel;
 
 		float2 force = (forceMV + forceBehind) * mask;
-		// Density: body always (so behind step still dyes when idle); MV gate no longer required
-		float densGate = mask;
+		float densGate = mask * fresnel;
 
 		OutVelocity = PrevVelocity + dt * force;
 		OutDensity = PrevDensity + dt * max(Strength, 0.0) * densGate;

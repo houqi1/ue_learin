@@ -14,16 +14,22 @@ Scene side (CustomDepth Stencil + Output Velocity) is done by you.
 | `VelocityToFluid` | MV → fluid units |
 | `MinSpeedUV` | deadzone for reverse-MV step only |
 | `VelocityYFlip` | 0/1 |
-| `BehindDir` | UV unit vector toward phoenix **back** (CPU from mesh facing each frame) |
+| `BehindDir` | UV unit vector toward phoenix **back** (CPU from mesh local −Y each frame) |
 | `BehindStrength` | scale for body inject along `BehindDir` (stacked on reverse MV) |
+| `ViewTowardCamera` | world unit ≈ −CameraForward (CPU) for Fresnel N·V |
+| `FresnelPower` | rim sharpness (default 3) |
+| `FresnelWeight` | 0=off, 1=full Fresnel on density + behind |
+| `FresnelInvert` | 0=rim strong, 1=face-on strong |
 | mouse: `ClickUV`, `InjectForce`/`InjectDir`, `InjectPulse`, `ClickRadius`, `ClickStrength` | Mode 0 only |
 
-### Mode 1 body inject (two stacked forces)
+### Mode 1 body inject (two stacked forces + Fresnel)
 
-1. **Reverse Scene Velocity** when `|MV| >= MinSpeedUV` (existing).
-2. **BehindDir × BehindStrength** always on phoenix stencil (orientation from `APhoenixPawn` / BP mesh facing).
+1. **Reverse Scene Velocity** when `|MV| >= MinSpeedUV` (**no** Fresnel).
+2. **BehindDir × BehindStrength × Fresnel** on phoenix stencil.
+3. **Density × Fresnel** on body.
 
-Both apply only where Custom Stencil == `PhoenixStencil` (on the body, outward toward back for step 2).
+Fresnel: sample GBuffer **WorldNormal**, `F = pow(1-saturate(N·V), Power)` (or invert),  
+`scale = lerp(1, F, Weight)`. Wire `WorldNormal` from Sample GBuffer; rest from User.*.
 
 ## MCP steps (when Editor MCP is up)
 

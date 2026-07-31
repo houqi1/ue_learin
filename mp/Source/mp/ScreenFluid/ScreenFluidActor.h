@@ -132,6 +132,24 @@ protected:
 		meta = (DisplayName = "Phoenix Actor Override"))
 	TObjectPtr<AActor> PhoenixActorOverride;
 
+	/**
+	 * Fresnel scales density + behind force on body (not reverse SceneVel).
+	 * Needs GBuffer WorldNormal in Niagara + ViewTowardCamera from this actor.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Phoenix Fresnel",
+		meta = (ClampMin = "0.1", ClampMax = "16.0", DisplayName = "Fresnel Power"))
+	float FresnelPower = 3.f;
+
+	/** 0 = ignore Fresnel (scale=1), 1 = full Fresnel modulation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Phoenix Fresnel",
+		meta = (ClampMin = "0.0", ClampMax = "1.0", DisplayName = "Fresnel Weight"))
+	float FresnelWeight = 1.f;
+
+	/** false: rim strong (1-N·V); true: face-on strong (N·V). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Phoenix Fresnel",
+		meta = (DisplayName = "Fresnel Invert"))
+	bool bFresnelInvert = false;
+
 	// --- Stam solver params (pushed to Niagara User.*) ---
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "0.0001"))
 	float SimDt = 0.0166667f;
@@ -196,9 +214,13 @@ private:
 	/** Set float User param with both User.X and short X names. */
 	void SetNiagaraFloat(FName UserName, FName ShortName, float Value);
 	void SetNiagaraVec2(FName UserName, FName ShortName, FVector2D Value);
+	void SetNiagaraVec3(FName UserName, FName ShortName, FVector Value);
 
 	/** Project phoenix behind (world) → UV unit direction for Mode 1 step (2). */
 	void UpdatePhoenixBehindDirUV();
+
+	/** View dir used for Fresnel: approx direction from surface toward camera (−CameraForward). */
+	void UpdateViewTowardCamera();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> DistortMID;
@@ -212,6 +234,8 @@ private:
 	float PendingDensitySrc = 0.f;
 	/** Mode 1: UV-space unit vector toward phoenix back (from mesh facing). */
 	FVector2D PendingBehindDirUV = FVector2D::ZeroVector;
+	/** Mode 1 Fresnel: unit vector ≈ toward camera (world). */
+	FVector PendingViewTowardCamera = FVector::UpVector;
 	FVector2D LastMouseUV = FVector2D(0.5f, 0.5f);
 	FVector2D PrevHeldMouseUV = FVector2D(0.5f, 0.5f);
 	bool bHasPrevHeldMouseUV = false;
