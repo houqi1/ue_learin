@@ -4,27 +4,32 @@
 // Field = sample of Velocity RT from Niagara Export:
 //   RG = Stam velocity (can be large after cell*vMult inject)
 //   BA = density
-// Returns UV offset. Does NOT sample scene color (use SceneTexture node).
+//
+// Modes (wired in PP material graph):
+//   0 default — UV offset for scene warp
+//   bShowRT   — debug velocity pseudo-color
+//   bShowFire — black background + storytelling-style fire tint
 
 #ifndef SCREEN_FLUID_DISTORT_USF
 #define SCREEN_FLUID_DISTORT_USF
 
 // Soft-map arbitrary velocity into roughly [-1,1]^2 so MaxOffset is usable.
-// Without this, Stam-scale |v| >> 1 makes UV+offset leave the screen → no visible warp.
 float2 ScreenFluidSoftVelocity(float2 Vel)
 {
 	float speed = length(Vel);
-	// v / (1+|v|) keeps direction, bounds magnitude to < 1
 	return Vel / (1.0 + speed);
+}
+
+float ScreenFluidDensity(float4 Field)
+{
+	return max(Field.a, Field.b);
 }
 
 float ScreenFluidFieldMask(float4 Field)
 {
 	float2 Vel = Field.rg;
-	float dens = max(Field.a, Field.b);
+	float dens = ScreenFluidDensity(Field);
 	float speed = length(Vel);
-	// Density from HTML-style inject is often O(1..100); scale down.
-	// Also allow pure-velocity fields (A=0) via speed.
 	float mDens = saturate(dens * 0.02);
 	float mVel = saturate(speed * 0.15);
 	return saturate(max(mDens, mVel));
@@ -34,7 +39,6 @@ float2 ScreenFluidOffsetFromField(float4 Field, float MaxOffset, float Intensity
 {
 	float2 soft = ScreenFluidSoftVelocity(Field.rg);
 	float mask = ScreenFluidFieldMask(Field);
-	// Extra *2 so moderate MaxOffset (0.05~0.15) is still readable
 	return soft * MaxOffset * mask * Intensity * 2.0;
 }
 
@@ -42,8 +46,95 @@ float3 ScreenFluidDebugColor(float4 Field)
 {
 	float2 soft = ScreenFluidSoftVelocity(Field.rg) * 0.5 + 0.5;
 	float mask = ScreenFluidFieldMask(Field);
-	// Show velocity in RG, density influence in B
 	return float3(soft.x, soft.y, mask);
+}
+
+// ---------------------------------------------------------------------------
+// Fire shade (storytelling-clone Fire layer)
+// density → screen-space normal-ish gradient → delta edge glow
+// → mix grayscale (colorMix) → × intensity × fireColor
+// No scene: pure flame on black (return fire only; zeros stay black).
+// ---------------------------------------------------------------------------
+
+// Multi-sample density (Texture path) — preferred when Tex + UV available.
+float ScreenFluidSampleDensity(Texture2D Tex, SamplerState S, float2 UV)
+{
+	float4 f = Tex.SampleLevel(S, saturate(UV), 0);
+	return ScreenFluidDensity(f);
+}
+
+// Density height-field normal (same structure as storytelling FS_NORMAL).
+float3 ScreenFluidDensityNormalAt(
+	Texture2D Tex, SamplerState S, float2 UV, float2 Texel, float NormalEpsilon)
+{
+	float C = ScreenFluidSampleDensity(Tex, S, UV);
+	float R = ScreenFluidSampleDensity(Tex, S, UV + float2(Texel.x, 0.0));
+	float B = ScreenFluidSampleDensity(Tex, S, UV + float2(0.0, Texel.y));
+	float2 dN = float2(R - C, B - C);
+	float3 N = float3(0.0, 1.0, 0.0);
+	float2 eps = float2(max(NormalEpsilon, 1e-5), 0.0);
+	N = normalize(N + cross(dN.x * N + eps.xyy, dN.y * N + eps.yyx));
+	return N;
+}
+
+// Neighbor normal difference (storytelling FS_DELTA).
+float3 ScreenFluidNormalDelta(
+	Texture2D Tex, SamplerState S, float2 UV, float2 Texel, float NormalEpsilon)
+{
+	float3 C = ScreenFluidDensityNormalAt(Tex, S, UV, Texel, NormalEpsilon);
+	float3 R = ScreenFluidDensityNormalAt(Tex, S, UV + float2(Texel.x, 0.0), Texel, NormalEpsilon);
+	float3 B = ScreenFluidDensityNormalAt(Tex, S, UV + float2(0.0, Texel.y), Texel, NormalEpsilon);
+	return abs(R - C) + abs(B - C);
+}
+
+float3 ScreenFluidFireTint(float3 Emi, float3 FireColor, float Intensity, float ColorMix)
+{
+	float luminance = dot(Emi, float3(0.2126, 0.7152, 0.0722));
+	float3 emi = lerp(Emi, float3(luminance, luminance, luminance), saturate(ColorMix));
+	return max(emi * max(Intensity, 0.0) * FireColor, 0.0);
+}
+
+/** Texture-based fire (matches clone density→normal→delta pipeline). */
+float3 ScreenFluidFireColorFromTex(
+	Texture2D Tex, SamplerState S, float2 UV, float2 Texel,
+	float3 FireColor, float Intensity, float ColorMix, float NormalEpsilon)
+{
+	float3 delta = ScreenFluidNormalDelta(Tex, S, UV, Texel, NormalEpsilon);
+	// Bulk density contribution so large dye regions still glow a little
+	float dens = ScreenFluidSampleDensity(Tex, S, UV);
+	float bulk = saturate(dens * 0.02);
+	float3 emi = delta + bulk * 0.15;
+	return ScreenFluidFireTint(emi, FireColor, Intensity, ColorMix);
+}
+
+/**
+ * Field-only fire using screen derivatives (no extra samples).
+ * Use when Custom only has a single Field float4 pin.
+ * Still approximates edge highlight of the density field.
+ */
+float3 ScreenFluidFireColorFromField(
+	float4 Field,
+	float3 FireColor,
+	float Intensity,
+	float ColorMix)
+{
+	// dens often O(1..100); speed from Stam inject can be large
+	float dens = ScreenFluidDensity(Field);
+	float spd = length(Field.rg);
+	float bulk = saturate(dens * 0.02) + saturate(spd * 0.12);
+	float2 g = float2(ddx(dens), ddy(dens));
+	float2 gv = float2(ddx(spd), ddy(spd));
+	// scale edges down (raw dens gradients can be huge) then combine with bulk core
+	float edge = length(g) * 0.05 + length(gv) * 0.4;
+	float e = saturate(bulk * 1.2 + edge);
+	float3 emi = float3(e + abs(g.x) * 0.02, e + abs(g.y) * 0.02, e);
+	return ScreenFluidFireTint(emi, FireColor, Intensity, ColorMix);
+}
+
+/** Default storytelling Fire.color = 0xFFD340. */
+float3 ScreenFluidDefaultFireColor()
+{
+	return float3(1.0, 0.82745, 0.25098);
 }
 
 #endif

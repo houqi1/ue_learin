@@ -19,7 +19,20 @@ Click UV → Niagara User params
 `AScreenFluidActor` only:
 
 - Writes `User.ClickUV / ClickStrength / ClickRadius / InjectPulse / VelocityRT`
-- Applies `M_PP_ScreenFluidDistort`
+- Applies `M_PP_ScreenFluidDistort` (UV warp / RT debug)
+- Optional fire preview: `bShowFireColor` + `M_PP_ScreenFluidFire` (black + density→delta tint)
+
+### Fire color display
+
+| Actor | Meaning |
+|-------|---------|
+| `bShowFireColor` | Switch: black bg + storytelling fire shade |
+| `FireColor` | default `#FFD340` |
+| `FireIntensity` | default `5` |
+| `FireColorMix` | default `0.5` |
+
+Shader: `Shaders/ScreenFluidDistort.usf` → `ScreenFluidFireColorFromField`  
+Material: `/Game/FX/ScreenFluid/M_PP_ScreenFluidFire` (create/rebuild: `py Tools/create_pp_screen_fluid_fire.py`)
 
 ## Docs
 

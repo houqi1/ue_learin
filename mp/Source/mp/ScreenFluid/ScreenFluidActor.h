@@ -50,9 +50,17 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Niagara")
 	TObjectPtr<UTextureRenderTarget2D> VelocityRT;
 
-	/** Post process material sampling VelocityRT (param: VelocityField). */
+	/** Post process material sampling VelocityRT (param: VelocityField) — UV warp / RT debug. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Materials")
 	TObjectPtr<UMaterialInterface> DistortMaterial;
+
+	/**
+	 * Optional PP material for black + fire shade (params: VelocityField, FireColor, FireIntensity, FireColorMix).
+	 * Create with Tools/create_pp_screen_fluid_fire.py → /Game/FX/ScreenFluid/M_PP_ScreenFluidFire.
+	 * When null, falls back to DistortMaterial + bShowFire scalar (if material supports it).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Materials")
+	TObjectPtr<UMaterialInterface> FireMaterial;
 
 	// --- Inject mode ---
 	/**
@@ -184,6 +192,25 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display")
 	bool bShowDebugVelocity = false;
 
+	/**
+	 * When true: full-screen black + storytelling fire shade (density→delta edge → #FFD340).
+	 * Overrides UV warp and bShowDebugVelocity. Requires M_PP_ScreenFluidDistort fire wiring.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display|Fire")
+	bool bShowFireColor = false;
+
+	/** storytelling Fire.color default 0xFFD340. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display|Fire")
+	FLinearColor FireColor = FLinearColor(1.f, 0.82745f, 0.25098f, 1.f);
+
+	/** storytelling Fire.intensity default 5. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display|Fire", meta = (ClampMin = "0.0"))
+	float FireIntensity = 5.f;
+
+	/** storytelling Fire.colorMix (0=keep delta RGB, 1=full grayscale before tint). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Display|Fire", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FireColorMix = 0.5f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Debug")
 	bool bLogInput = true;
 
@@ -224,6 +251,16 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> DistortMID;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> FireMID;
+
+	/** Active PP MID last applied (Distort or Fire). */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ActiveBlendMID;
+
+	void PushPostProcessParams();
+	UMaterialInstanceDynamic* GetActiveDisplayMID() const;
 
 	bool bMouseWasDown = false;
 	bool bSpaceWasDown = false;

@@ -82,6 +82,10 @@ namespace SFMat
 	static const FName Intensity(TEXT("Intensity"));
 	static const FName bDebugVelocity(TEXT("bDebugVelocity")); // legacy alias
 	static const FName bShowRT(TEXT("bShowRT"));             // 1 = fullscreen show Velocity RT
+	static const FName bShowFire(TEXT("bShowFire"));         // 1 = black + fire shade
+	static const FName FireColor(TEXT("FireColor"));
+	static const FName FireIntensity(TEXT("FireIntensity"));
+	static const FName FireColorMix(TEXT("FireColorMix"));
 }
 
 AScreenFluidActor::AScreenFluidActor()
@@ -119,6 +123,11 @@ void AScreenFluidActor::BeginPlay()
 		DistortMaterial = LoadObject<UMaterialInterface>(
 			nullptr, TEXT("/Game/FX/ScreenFluid/M_PP_ScreenFluidDistort.M_PP_ScreenFluidDistort"));
 	}
+	if (!FireMaterial)
+	{
+		FireMaterial = LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Game/FX/ScreenFluid/M_PP_ScreenFluidFire.M_PP_ScreenFluidFire"));
+	}
 	if (!VelocityRT)
 	{
 		VelocityRT = LoadObject<UTextureRenderTarget2D>(
@@ -134,13 +143,21 @@ void AScreenFluidActor::BeginPlay()
 	PushNiagaraParams();
 
 	UE_LOG(LogScreenFluid, Warning,
-		TEXT("ScreenFluid NIAGARA Grid2D host ready | System=%s RT=%s Distort=%s NiagaraActive=%d InjectMode=%d PhoenixStencil=%d"),
+		TEXT("ScreenFluid NIAGARA Grid2D host ready | System=%s RT=%s Distort=%s FireMat=%s NiagaraActive=%d InjectMode=%d PhoenixStencil=%d ShowFire=%d"),
 		*GetNameSafe(FluidSystem),
 		*GetNameSafe(VelocityRT),
 		DistortMID ? TEXT("ok") : TEXT("NULL"),
+		FireMID ? TEXT("ok") : TEXT("NULL"),
 		(NiagaraFluid && NiagaraFluid->IsActive()) ? 1 : 0,
 		InjectMode,
-		PhoenixStencilID);
+		PhoenixStencilID,
+		bShowFireColor ? 1 : 0);
+
+	if (bShowFireColor && !FireMID)
+	{
+		UE_LOG(LogScreenFluid, Warning,
+			TEXT("bShowFireColor=1 but FireMaterial missing — run Tools/create_pp_screen_fluid_fire.py or assign M_PP_ScreenFluidFire"));
+	}
 }
 
 void AScreenFluidActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -211,26 +228,69 @@ void AScreenFluidActor::Tick(float DeltaSeconds)
 	}
 	PrevInjectPulse = InjectPulse;
 
-	if (DistortMID && VelocityRT)
-	{
-		DistortMID->SetTextureParameterValue(SFMat::VelocityField, VelocityRT);
-		DistortMID->SetScalarParameterValue(SFMat::MaxOffset, MaxUVOffset);
-		DistortMID->SetScalarParameterValue(SFMat::Chromatic, Chromatic);
-		DistortMID->SetScalarParameterValue(SFMat::Intensity, DistortIntensity);
-		// bShowRT: when true, PP draws VelocityField RT directly (debug view).
-		DistortMID->SetScalarParameterValue(SFMat::bShowRT, bShowDebugVelocity ? 1.f : 0.f);
-		DistortMID->SetScalarParameterValue(SFMat::bDebugVelocity, bShowDebugVelocity ? 1.f : 0.f);
-	}
+	PushPostProcessParams();
 
 	if (PostProcess)
 	{
 		PostProcess->bEnabled = true;
 		PostProcess->bUnbound = true;
-		if (PostProcess->Settings.WeightedBlendables.Array.Num() == 0 && DistortMID)
+		UMaterialInstanceDynamic* WantMID = GetActiveDisplayMID();
+		const bool bNeedRebind =
+			WantMID &&
+			(PostProcess->Settings.WeightedBlendables.Array.Num() == 0 || ActiveBlendMID != WantMID);
+		if (bNeedRebind)
 		{
 			ApplyPostProcessBlendable();
 		}
 	}
+}
+
+void AScreenFluidActor::PushPostProcessParams()
+{
+	if (!VelocityRT)
+	{
+		return;
+	}
+
+	const bool bFire = bShowFireColor;
+	const bool bDebugRT = bShowDebugVelocity && !bFire;
+
+	// Always push fire + mode flags into DistortMID (patched material supports bShowFire).
+	// Prefer dedicated FireMID only when assigned AND fire mode is on (full black+flame mat).
+	if (DistortMID)
+	{
+		DistortMID->SetTextureParameterValue(SFMat::VelocityField, VelocityRT);
+		DistortMID->SetScalarParameterValue(SFMat::MaxOffset, MaxUVOffset);
+		DistortMID->SetScalarParameterValue(SFMat::Chromatic, Chromatic);
+		DistortMID->SetScalarParameterValue(SFMat::Intensity, DistortIntensity);
+		// When using dedicated FireMID, Distort is unbound; still keep params in sync.
+		DistortMID->SetScalarParameterValue(SFMat::bShowFire, bFire ? 1.f : 0.f);
+		DistortMID->SetScalarParameterValue(SFMat::bShowRT, bDebugRT ? 1.f : 0.f);
+		DistortMID->SetScalarParameterValue(SFMat::bDebugVelocity, bDebugRT ? 1.f : 0.f);
+		DistortMID->SetVectorParameterValue(SFMat::FireColor, FireColor);
+		DistortMID->SetScalarParameterValue(SFMat::FireIntensity, FireIntensity);
+		DistortMID->SetScalarParameterValue(SFMat::FireColorMix, FireColorMix);
+	}
+
+	if (FireMID)
+	{
+		FireMID->SetTextureParameterValue(SFMat::VelocityField, VelocityRT);
+		FireMID->SetVectorParameterValue(SFMat::FireColor, FireColor);
+		FireMID->SetScalarParameterValue(SFMat::FireIntensity, FireIntensity);
+		FireMID->SetScalarParameterValue(SFMat::FireColorMix, FireColorMix);
+		// Dedicated fire mat has no scene path — always "on" when bound.
+		FireMID->SetScalarParameterValue(SFMat::bShowFire, 1.f);
+	}
+}
+
+UMaterialInstanceDynamic* AScreenFluidActor::GetActiveDisplayMID() const
+{
+	// Fire mode: prefer dedicated fire PP mat; else same DistortMID with bShowFire=1.
+	if (bShowFireColor)
+	{
+		return FireMID ? FireMID : DistortMID;
+	}
+	return DistortMID;
 }
 
 void AScreenFluidActor::InjectAtScreenUV(FVector2D ScreenUV, float StrengthOverride, float RadiusOverride)
@@ -293,16 +353,22 @@ void AScreenFluidActor::EnsureMaterialInstances()
 	{
 		DistortMID = UMaterialInstanceDynamic::Create(DistortMaterial, this);
 	}
+	if (FireMaterial && !FireMID)
+	{
+		FireMID = UMaterialInstanceDynamic::Create(FireMaterial, this);
+	}
 }
 
 void AScreenFluidActor::ApplyPostProcessBlendable()
 {
-	if (!PostProcess || !DistortMID)
+	UMaterialInstanceDynamic* MID = GetActiveDisplayMID();
+	if (!PostProcess || !MID)
 	{
 		return;
 	}
+	ActiveBlendMID = MID;
 	PostProcess->Settings.WeightedBlendables.Array.Reset();
-	PostProcess->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, DistortMID));
+	PostProcess->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, MID));
 	PostProcess->Priority = PostProcessPriority;
 	PostProcess->BlendWeight = 1.f;
 	PostProcess->bUnbound = true;
@@ -320,9 +386,9 @@ void AScreenFluidActor::ApplyPostProcessBlendable()
 				if (!Cam) continue;
 				Cam->PostProcessSettings.WeightedBlendables.Array.RemoveAll([this](const FWeightedBlendable& B)
 				{
-					return B.Object == DistortMID;
+					return B.Object == DistortMID || B.Object == FireMID;
 				});
-				Cam->PostProcessSettings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, DistortMID));
+				Cam->PostProcessSettings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, MID));
 				Cam->PostProcessBlendWeight = 1.f;
 			}
 		}
