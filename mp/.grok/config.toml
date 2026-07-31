@@ -1,0 +1,10 @@
+# Unreal Editor MCP via local HTTP compatibility proxy on :8010
+# UE plugin listens on :8000. Start proxy (watchdog auto-restarts):
+#   powershell -File Tools/start_unreal_mcp_proxy.ps1
+# Docs: Tools/MCP_UNREAL_TROUBLESHOOTING.md
+
+[mcp_servers.unreal-mcp]
+url = "http://127.0.0.1:8010/mcp"
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 600
