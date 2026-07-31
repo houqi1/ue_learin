@@ -12,6 +12,7 @@
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
+#include "../Phoenix/PhoenixPawn.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogScreenFluid, Log, All);
 
@@ -59,6 +60,10 @@ namespace SFUser
 	static const FName MinSpeedUVShort(TEXT("MinSpeedUV"));
 	static const FName VelocityYFlip(TEXT("User.VelocityYFlip"));
 	static const FName VelocityYFlipShort(TEXT("VelocityYFlip"));
+	static const FName BehindDir(TEXT("User.BehindDir"));
+	static const FName BehindDirShort(TEXT("BehindDir"));
+	static const FName BehindStrength(TEXT("User.BehindStrength"));
+	static const FName BehindStrengthShort(TEXT("BehindStrength"));
 }
 
 namespace SFMat
@@ -498,6 +503,8 @@ void AScreenFluidActor::PushNiagaraParams()
 	SetNiagaraFloat(SFUser::VelocityToFluid, SFUser::VelocityToFluidShort, VelocityToFluid);
 	SetNiagaraFloat(SFUser::MinSpeedUV, SFUser::MinSpeedUVShort, MinSpeedUV);
 	SetNiagaraFloat(SFUser::VelocityYFlip, SFUser::VelocityYFlipShort, bVelocityYFlip ? 1.f : 0.f);
+	SetNiagaraVec2(SFUser::BehindDir, SFUser::BehindDirShort, PendingBehindDirUV);
+	SetNiagaraFloat(SFUser::BehindStrength, SFUser::BehindStrengthShort, BehindStrength);
 
 	// Mouse brush params (Mode 0). SF_Inject uses InjectDir (+ Strength dye).
 	// Write InjectDir first (primary for current StageInject.ush), then InjectForce alias.
@@ -625,15 +632,18 @@ void AScreenFluidActor::TickInput()
 	PendingDensitySrc = 0.f;
 	InjectPulse = 0.f;
 
-	// Mode 1: Phoenix GBuffer inject is entirely GPU-side (Stencil + Scene Velocity).
+	// Mode 1: GBuffer stencil + reverse MV on GPU; behind dir from pawn facing (CPU → User.BehindDir).
 	if (InjectMode == 1)
 	{
 		PendingDensitySrc = DensityAmount;
+		UpdatePhoenixBehindDirUV();
 		bHasPrevHeldMouseUV = false;
 		bMouseWasDown = false;
 		bSpaceWasDown = false;
 		return;
 	}
+
+	PendingBehindDirUV = FVector2D::ZeroVector;
 
 	// Mode 0: ensure cursor/input mode if user switched InjectMode after BeginPlay
 	SetupPlayerInputHelpers();
@@ -684,6 +694,79 @@ void AScreenFluidActor::TickInput()
 
 	bMouseWasDown = bLeftDown;
 	bSpaceWasDown = bSpaceDown;
+}
+
+void AScreenFluidActor::UpdatePhoenixBehindDirUV()
+{
+	PendingBehindDirUV = FVector2D::ZeroVector;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+	if (!PC)
+	{
+		return;
+	}
+
+	const APhoenixPawn* Phoenix = nullptr;
+	if (PhoenixActorOverride)
+	{
+		Phoenix = Cast<APhoenixPawn>(PhoenixActorOverride.Get());
+	}
+	if (!Phoenix)
+	{
+		Phoenix = Cast<APhoenixPawn>(PC->GetPawn());
+	}
+	if (!Phoenix)
+	{
+		TArray<AActor*> Found;
+		UGameplayStatics::GetAllActorsOfClass(World, APhoenixPawn::StaticClass(), Found);
+		if (Found.Num() > 0)
+		{
+			Phoenix = Cast<APhoenixPawn>(Found[0]);
+		}
+	}
+	if (!Phoenix)
+	{
+		return;
+	}
+
+	const FVector BehindWorld = Phoenix->GetBehindWorldDirection();
+	if (BehindWorld.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector Origin = Phoenix->GetActorLocation();
+	const FVector Tip = Origin + BehindWorld.GetSafeNormal() * 200.f;
+
+	FVector2D Screen0, Screen1;
+	if (!PC->ProjectWorldLocationToScreen(Origin, Screen0, false) ||
+		!PC->ProjectWorldLocationToScreen(Tip, Screen1, false))
+	{
+		return;
+	}
+
+	int32 SizeX = 0, SizeY = 0;
+	PC->GetViewportSize(SizeX, SizeY);
+	if (SizeX <= 0 || SizeY <= 0)
+	{
+		return;
+	}
+
+	const FVector2D UV0(Screen0.X / float(SizeX), Screen0.Y / float(SizeY));
+	const FVector2D UV1(Screen1.X / float(SizeX), Screen1.Y / float(SizeY));
+	const FVector2D Delta = UV1 - UV0;
+	if (Delta.SizeSquared() < 1.e-12f)
+	{
+		return;
+	}
+
+	PendingBehindDirUV = Delta.GetSafeNormal();
 }
 
 bool AScreenFluidActor::GetMouseScreenUV(FVector2D& OutUV) const

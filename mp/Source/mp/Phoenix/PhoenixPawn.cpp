@@ -148,6 +148,30 @@ void APhoenixPawn::Tick(float DeltaSeconds)
 	Mesh->SetRelativeRotation(NewRot);
 }
 
+FVector APhoenixPawn::GetFacingWorldDirection() const
+{
+	// Fluid "face" axis = mesh local +Y (UE Right). Behind inject uses local -Y.
+	if (Mesh)
+	{
+		const FVector MeshY = Mesh->GetRightVector();
+		if (!MeshY.IsNearlyZero())
+		{
+			return MeshY.GetSafeNormal();
+		}
+	}
+	if (!LastMoveDirection.IsNearlyZero())
+	{
+		return LastMoveDirection.GetSafeNormal();
+	}
+	return GetActorRightVector().GetSafeNormal();
+}
+
+FVector APhoenixPawn::GetBehindWorldDirection() const
+{
+	// Mesh local -Y (world): opposite of GetRightVector().
+	return -GetFacingWorldDirection();
+}
+
 void APhoenixPawn::EnsureDefaultInput()
 {
 	if (!MoveAction)

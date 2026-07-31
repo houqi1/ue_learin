@@ -63,9 +63,9 @@ float4 SF_Inject(
 	return float4(vel, 0.0, dens);
 }
 
-// --- Inject from Phoenix GBuffer (Mode=1): mask * reverse scene velocity ---
+// --- Inject from Phoenix GBuffer (Mode=1): body stencil + reverse MV + behind dir ---
 // sceneVel / stencil come from Niagara SampleGBuffer / GBuffer DI (not SceneTexture nodes).
-// sampleUV: cell UV remapped for viewport if needed (ViewSize * BufferInvSize).
+// behindDir: UV-space unit vector toward phoenix back (from AScreenFluidActor / pawn facing).
 // Returns RG=velocity, A=density (B unused) matching grid packing.
 float4 SF_InjectFromGBuffer(
 	float2 prevVel,
@@ -78,7 +78,9 @@ float4 SF_InjectFromGBuffer(
 	float velocityToFluid,
 	float minSpeed,
 	float velocityYFlip,
-	float speedClamp)
+	float speedClamp,
+	float2 behindDir,
+	float behindStrength)
 {
 	float mask = (abs(stencil - phoenixStencil) < 0.5) ? 1.0 : 0.0;
 
@@ -89,13 +91,20 @@ float4 SF_InjectFromGBuffer(
 	}
 
 	float spd = length(v);
-	float gate = (spd >= max(minSpeed, 0.0)) ? 1.0 : 0.0;
+	float speedGate = (spd >= max(minSpeed, 0.0)) ? 1.0 : 0.0;
 
-	// Reverse of screen-space motion → fluid source force
-	float2 force = -v * velocityToFluid * injectStrength * mask * gate;
+	// (1) reverse screen-space motion when moving
+	float2 forceMV = -v * velocityToFluid * injectStrength * speedGate;
+	// (2) outward inject toward current phoenix back (orientation-driven)
+	float bLen = length(behindDir);
+	float2 bDir = (bLen > 1e-6) ? (behindDir / bLen) : float2(0.0, 0.0);
+	float2 forceBehind = bDir * max(behindStrength, 0.0);
+
+	float2 force = (forceMV + forceBehind) * mask;
 	float2 vel = prevVel + force;
 
-	float densAdd = injectDensity * mask * gate * saturate(spd * 10.0);
+	// Density on body every frame (independent of motion deadzone)
+	float densAdd = injectDensity * mask;
 	float dens = saturate(prevDens * 0.995 + densAdd);
 
 	float clampSp = max(speedClamp, 1e-5);
@@ -128,7 +137,9 @@ float4 SF_InjectUnified(
 	float injectDensity,
 	float velocityToFluid,
 	float minSpeed,
-	float velocityYFlip)
+	float velocityYFlip,
+	float2 behindDir,
+	float behindStrength)
 {
 	float4 prev = SF_Sample4(VelTex, VelS, UV);
 	if (InjectMode > 0.5)
@@ -137,7 +148,8 @@ float4 SF_InjectUnified(
 			prev.xy, prev.a,
 			sceneVel, stencil, phoenixStencil,
 			injectStrength, injectDensity, velocityToFluid,
-			minSpeed, velocityYFlip, 2.0);
+			minSpeed, velocityYFlip, 2.0,
+			behindDir, behindStrength);
 	}
 
 	// Mouse: optional directional force (InjectForce) blended with radial brush

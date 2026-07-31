@@ -12,9 +12,18 @@ Scene side (CustomDepth Stencil + Output Velocity) is done by you.
 | `InjectStrength` | force scale on `-SceneVelocity` |
 | `InjectDensity` | dye amount (uses `DensityAmount`) |
 | `VelocityToFluid` | MV → fluid units |
-| `MinSpeedUV` | deadzone |
+| `MinSpeedUV` | deadzone for reverse-MV step only |
 | `VelocityYFlip` | 0/1 |
+| `BehindDir` | UV unit vector toward phoenix **back** (CPU from mesh facing each frame) |
+| `BehindStrength` | scale for body inject along `BehindDir` (stacked on reverse MV) |
 | mouse: `ClickUV`, `InjectForce`/`InjectDir`, `InjectPulse`, `ClickRadius`, `ClickStrength` | Mode 0 only |
+
+### Mode 1 body inject (two stacked forces)
+
+1. **Reverse Scene Velocity** when `|MV| >= MinSpeedUV` (existing).
+2. **BehindDir × BehindStrength** always on phoenix stencil (orientation from `APhoenixPawn` / BP mesh facing).
+
+Both apply only where Custom Stencil == `PhoenixStencil` (on the body, outward toward back for step 2).
 
 ## MCP steps (when Editor MCP is up)
 

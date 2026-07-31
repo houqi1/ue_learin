@@ -40,9 +40,12 @@ void SF_Inject(
 // ---------------------------------------------------------------------------
 // EXTENDED — only for Phoenix GBuffer path (optional; does not replace SF_Inject)
 // Extra pins: InjectMode, SceneVel, Stencil, PhoenixStencil,
-//             InjectStrength, VelocityToFluid, MinSpeedUV, VelocityYFlip
+//             InjectStrength, VelocityToFluid, MinSpeedUV, VelocityYFlip,
+//             BehindDir (UV unit, toward phoenix back), BehindStrength
 // InjectMode <= 0.5 → identical to SF_Inject (above)
-// InjectMode >  0.5 → stencil mask * reverse SceneVel
+// InjectMode >  0.5 → on body stencil:
+//   (1) reverse SceneVel when moving
+//   (2) + BehindDir * BehindStrength (orientation from pawn/BP, always)
 // ---------------------------------------------------------------------------
 void SF_InjectWithGBuffer(
 	float2 UnitToUV,
@@ -64,6 +67,8 @@ void SF_InjectWithGBuffer(
 	float VelocityToFluid,
 	float MinSpeedUV,
 	float VelocityYFlip,
+	float2 BehindDir,
+	float BehindStrength,
 	out float2 OutVelocity,
 	out float OutDensity,
 	out float OutPressure,
@@ -73,17 +78,29 @@ void SF_InjectWithGBuffer(
 	{
 		float dt = max(Dt, 0.0);
 		float mask = (abs(Stencil - PhoenixStencil) < 0.5) ? 1.0 : 0.0;
+
+		// (1) existing: reverse screen motion when |SceneVel| above deadzone
 		float2 v = SceneVel;
 		if (VelocityYFlip > 0.5)
 		{
 			v.y = -v.y;
 		}
 		float spd = length(v);
-		float gate = mask * ((spd >= max(MinSpeedUV, 0.0)) ? 1.0 : 0.0);
-		float2 force = -v * VelocityToFluid * InjectStrength;
+		float speedGate = (spd >= max(MinSpeedUV, 0.0)) ? 1.0 : 0.0;
+		float2 forceMV = -v * VelocityToFluid * InjectStrength * speedGate;
 
-		OutVelocity = PrevVelocity + dt * force * gate;
-		OutDensity = PrevDensity + dt * max(Strength, 0.0) * gate;
+		// (2) added: outward inject toward current phoenix back (CPU UV dir)
+		float2 b = BehindDir;
+		float bLen = length(b);
+		float2 bDir = (bLen > 1e-6) ? (b / bLen) : float2(0.0, 0.0);
+		float2 forceBehind = bDir * max(BehindStrength, 0.0);
+
+		float2 force = (forceMV + forceBehind) * mask;
+		// Density: body always (so behind step still dyes when idle); MV gate no longer required
+		float densGate = mask;
+
+		OutVelocity = PrevVelocity + dt * force;
+		OutDensity = PrevDensity + dt * max(Strength, 0.0) * densGate;
 		OutPressure = PrevPressure;
 		OutDivergence = PrevDivergence;
 		return;

@@ -115,6 +115,23 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Inject|Phoenix")
 	bool bVelocityYFlip = false;
 
+	/**
+	 * Extra body inject along phoenix behind (UV unit dir from pawn facing).
+	 * Force = BehindDir * BehindStrength on stencil mask; stacked on reverse SceneVel.
+	 * Own category so it is easy to find after cold rebuild (not Live Coding only).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Phoenix Behind",
+		meta = (ClampMin = "0.0", DisplayName = "Behind Strength"))
+	float BehindStrength = 30.f;
+
+	/**
+	 * Optional explicit phoenix. If null, uses player pawn cast to APhoenixPawn,
+	 * then first APhoenixPawn in world.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Phoenix Behind",
+		meta = (DisplayName = "Phoenix Actor Override"))
+	TObjectPtr<AActor> PhoenixActorOverride;
+
 	// --- Stam solver params (pushed to Niagara User.*) ---
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ScreenFluid|Solver", meta = (ClampMin = "0.0001"))
 	float SimDt = 0.0166667f;
@@ -180,6 +197,9 @@ private:
 	void SetNiagaraFloat(FName UserName, FName ShortName, float Value);
 	void SetNiagaraVec2(FName UserName, FName ShortName, FVector2D Value);
 
+	/** Project phoenix behind (world) → UV unit direction for Mode 1 step (2). */
+	void UpdatePhoenixBehindDirUV();
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> DistortMID;
 
@@ -190,6 +210,8 @@ private:
 	/** Stam u0/v0 for this frame (grid-cell delta * VelocityMult); zero if still. */
 	FVector2D PendingInjectForce = FVector2D::ZeroVector;
 	float PendingDensitySrc = 0.f;
+	/** Mode 1: UV-space unit vector toward phoenix back (from mesh facing). */
+	FVector2D PendingBehindDirUV = FVector2D::ZeroVector;
 	FVector2D LastMouseUV = FVector2D(0.5f, 0.5f);
 	FVector2D PrevHeldMouseUV = FVector2D(0.5f, 0.5f);
 	bool bHasPrevHeldMouseUV = false;

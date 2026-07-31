@@ -23,9 +23,11 @@ SF_Inject(
 	OutDivergence);
 
 // --- Phoenix (uncomment & comment out SF_Inject above when ready) ---
+// Extra Mode1 pins: BehindDir (User.BehindDir), BehindStrength (User.BehindStrength)
 // SF_InjectWithGBuffer(
 //	UnitToUV, ClickUV, InjectDir, Strength, Radius, InjectPulse, Dt,
 //	PrevVelocity, PrevDensity, PrevPressure, PrevDivergence,
 //	InjectMode, SceneVel, Stencil, PhoenixStencil,
 //	InjectStrength, VelocityToFluid, MinSpeedUV, VelocityYFlip,
+//	BehindDir, BehindStrength,
 //	OutVelocity, OutDensity, OutPressure, OutDivergence);

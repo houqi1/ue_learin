@@ -29,6 +29,17 @@ public:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void PawnClientRestart() override;
 
+	/** World-space "face" axis = mesh local +Y (GetRightVector). */
+	UFUNCTION(BlueprintPure, Category = "Phoenix|Fluid")
+	FVector GetFacingWorldDirection() const;
+
+	/** World-space behind = mesh local -Y (for screen-fluid outward inject). */
+	UFUNCTION(BlueprintPure, Category = "Phoenix|Fluid")
+	FVector GetBehindWorldDirection() const;
+
+	UFUNCTION(BlueprintPure, Category = "Phoenix|Movement")
+	FVector GetLastMoveDirection() const { return LastMoveDirection; }
+
 protected:
 	void Move(const FInputActionValue& Value);
 	void EnsureDefaultInput();
